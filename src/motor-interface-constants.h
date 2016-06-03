@@ -94,6 +94,11 @@
 #define PIN_P8_18  (GPIO_2_BASE |  1)
 #define PIN_P8_19  (GPIO_0_BASE | 22)  // EHRPWM2A
 #define PIN_P8_26  (GPIO_1_BASE | 29)
+#define PIN_P8_28  (GPIO_2_BASE | 24)  // LCD_PCLK
+#define PIN_P8_39  (GPIO_2_BASE | 12)  // LCD_DATA6
+#define PIN_P8_40  (GPIO_2_BASE | 13)  // LCD_DATA7
+#define PIN_P8_43  (GPIO_2_BASE | 8)   // LCD_DATA2
+#define PIN_P8_44  (GPIO_2_BASE | 9)   // LCD_DATA3
 
 #define GPIO_NOT_MAPPED  0
 

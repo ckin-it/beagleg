@@ -1,0 +1,132 @@
+
+/dts-v1/;
+/plugin/;
+
+/{
+  compatible = "ti,beaglebone", "ti,beaglebone-black", "ti,beaglebone-green";
+  part-number = "BeagleG-ATRA";  /* BeagleG/Bumps 'cape' */
+  version = "00A0";
+
+  exclusive-use = /* the pin header uses */
+                  /* UARTS */
+                  "P9.11",        /* uart4_rxd */
+                  "P9.13",        /* uart4_txd */
+                  "P9.21",        /* uart2_txd */
+                  "P9.22",        /* uart2_rxd */
+
+                  /* GPIOs */
+                  "P9_25",        /* MOTORS ENABLE GPO0 */
+
+                  /* X */
+                  "P8.11",        /* STEP GPO1 OUT*/
+                  "P8.12",        /* DIR GPO2 OUT*/
+                  "P9.27",        /* LSW GPI0 IN*/
+                  "P9.41",        /* RSW GPI1 IN*/
+
+                  /* Y */
+                  "P8.43",        /* STEP GPO3 OUT*/
+                  "P8.44",        /* DIR GPO4 OUT*/
+                  "P8.16",        /* LSW GPI2 IN*/
+                  "P8.15",        /* RSW GPI3 IN*/
+
+                  /* Z */
+                  "P8.39",        /* STEP GPO5 OUT*/
+                  "P8.40",        /* DIR GPO6 OUT*/
+                  "P8.41",        /* LSW GPI4 IN*/
+                  "P8.42",        /* RSW GPI5 IN*/
+
+                  /* A component */
+                  "P8.28",        /* STEP GPO7 OUT*/
+                  "P8.26",        /* DIR GPIOJ1 OUT*/
+
+                  /* B component */
+                  "P9.12",        /* STEP GPIOJ2 OUT*/
+                  "P8.7",        /* DIR GPI9 OUT*/
+
+                  /* the peripherals used */
+                  "uart4", // TMCL uart
+                  "uart2",
+                  "pruss";  // Programmable realtime unit
+
+  fragment@0 {
+    target = <&am33xx_pinmux>;
+    __overlay__ {
+      beagleg_gpio_pins: BeagleG_Pins {
+        pinctrl-single,pins = <
+          /* Motor enable */
+          0x1ac 0x17 /* P9_25, pullup */
+
+          /* Motor step pins */
+          0x034 0x07  /* STEPX P8.11 */
+          0x0a8 0x07  /* STEPY P8.43 */
+          0x0b8 0x07  /* STEPZ P8.39 */
+
+          /* Motor dir pins */
+          0x030 0x07  /* DIRX P8.12 */
+          0x0ac 0x07  /* DIRY P8.44 */
+          0x0bc 0x07  /* DIRZ P8.40 */
+
+          /* Component A */
+          0x0e8 0x07  /* STEPA P8.28 */
+          0x07c 0x07  /* DIRA P8.26 */
+
+          /* Component B */
+          0x078 0x07  /* STEPB P9.12 */
+          0x090 0x07  /* DIRB P8.7 */
+        >;
+      };
+
+      /* UARTS */
+      bb_uart2_pins: pinmux_bb_uart2_pins {
+        pinctrl-single,pins = <
+          0x154 0x21 /* UART2 TX */
+          0x150 0x21 /* UART2 RX */
+        >;
+      };
+
+      bb_uart4_pins: pinmux_bb_uart4_pins {
+        pinctrl-single,pins = <
+          0x070 0x26 /* UART4 RX */
+          0x074 0x26 /* UART4 TX */
+        >;
+      };
+    };
+  };
+
+  fragment@1 {
+    target = <&ocp>;
+    __overlay__ {
+      test_helper: helper {
+        compatible = "bone-pinmux-helper";
+        pinctrl-names = "default";
+        pinctrl-0 = <&beagleg_gpio_pins>;
+        status = "okay";
+      };
+    };
+  };
+
+  fragment@2 {
+    target = <&pruss>;
+    __overlay__ {
+      status = "okay";
+    };
+  };
+
+  fragment@3 {
+    target = <&uart3>;
+    __overlay__ {
+      status = "okay";
+      pinctrl-names = "default";
+      pinctrl-0 = <&bb_uart2_pins>;
+    };
+  };
+
+  fragment@4 {
+    target = <&uart5>;
+    __overlay__ {
+      status = "okay";
+      pinctrl-names = "default";
+      pinctrl-0 = <&bb_uart4_pins>;
+    };
+  };
+};

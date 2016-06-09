@@ -92,6 +92,7 @@ public:
     if (current_axis_ != GCODE_NUM_AXES) {
       ACCEPT_EXPR("steps-per-mm",     &config_->steps_per_mm[current_axis_]);
       ACCEPT_EXPR("steps-per-degree", &config_->steps_per_mm[current_axis_]);
+      ACCEPT_EXPR("steps-per-cc",     &config_->steps_per_mm[current_axis_]);
 
       ACCEPT_EXPR("max-feedrate",     &config_->max_feedrate[current_axis_]);
       ACCEPT_EXPR("max-anglerate",    &config_->max_feedrate[current_axis_]);

@@ -289,7 +289,7 @@ bool GCodeMachineControl::Impl::Init() {
                            || cfg_.max_feedrate[axis] <= 0);
     // Some generic useful output
     std::string line;
-    const char *unit = is_rotational_axis(axis) ? "° " : "mm";
+    const char *unit = is_dispensing_axis(axis) ? "cc" : "mm";
     line = StringPrintf("%c axis: Motor %-4s|%5.1f%s/s, %7.1f%s/s^2, %9.4f steps/%s ",
                         gcodep_axis2letter(axis),
                         hardware_mapping_->DebugMotorString(axis).c_str(),

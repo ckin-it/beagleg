@@ -29,10 +29,14 @@
 #define MOTOR_2_STEP_GPIO  PIN_P8_43  // motor 2
 #define MOTOR_3_STEP_GPIO  PIN_P8_39  // motor 3
 #define MOTOR_4_STEP_GPIO  PIN_P8_28  // motor 4
-#define MOTOR_5_STEP_GPIO  PIN_P9_12  // motor 5
+#define MOTOR_5_STEP_GPIO  PIN_P8_7  // motor 5
 
 #define MOTOR_1_DIR_GPIO   PIN_P8_12  // motor 1
 #define MOTOR_2_DIR_GPIO   PIN_P8_44  // motor 2
 #define MOTOR_3_DIR_GPIO   PIN_P8_40  // motor 3
-#define MOTOR_4_DIR_GPIO   PIN_P8_26  // motor 4
-#define MOTOR_5_DIR_GPIO   PIN_P8_7   // motor 5
+#define MOTOR_4_DIR_GPIO   PIN_P8_30  // motor 4
+#define MOTOR_5_DIR_GPIO   PIN_P8_8   // motor 5
+
+#define IN_1_GPIO          PIN_P9_27  // END_X
+#define IN_2_GPIO          PIN_P8_41  // END_Y
+#define IN_3_GPIO          PIN_P8_16  // END_Z

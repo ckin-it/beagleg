@@ -15,38 +15,49 @@
                   "P9.22",        /* uart2_rxd */
 
                   /* GPIOs */
-                  "P9_25",        /* MOTORS ENABLE GPO0 */
+                  "P9.25",        /* MOTORS ENABLE GPO0 */
 
                   /* X */
                   "P8.11",        /* STEP GPO1 OUT*/
                   "P8.12",        /* DIR GPO2 OUT*/
                   "P9.27",        /* LSW GPI0 IN*/
-                  "P9.41",        /* RSW GPI1 IN*/
 
                   /* Y */
                   "P8.43",        /* STEP GPO3 OUT*/
                   "P8.44",        /* DIR GPO4 OUT*/
-                  "P8.16",        /* LSW GPI2 IN*/
-                  "P8.15",        /* RSW GPI3 IN*/
+                  "P9.41",        /* LSW GPI1 IN*/
 
                   /* Z */
                   "P8.39",        /* STEP GPO5 OUT*/
                   "P8.40",        /* DIR GPO6 OUT*/
-                  "P8.41",        /* LSW GPI4 IN*/
-                  "P8.42",        /* RSW GPI5 IN*/
+                  "P8.16",        /* LSW GPI2 IN*/
 
                   /* A component */
                   "P8.28",        /* STEP GPO7 OUT*/
-                  "P8.26",        /* DIR GPIOJ1 OUT*/
+                  "P8.30",        /* DIR GPO8 OUT*/
 
                   /* B component */
-                  "P9.12",        /* STEP GPIOJ2 OUT*/
-                  "P8.7",        /* DIR GPI9 OUT*/
+                  "P8.7",        /* STEP GPO9 OUT*/
+                  "P8.8",        /* DIR GPO10 OUT*/
 
                   /* the peripherals used */
-                  "uart4", // TMCL uart
+                  "uart4",       // TMCL uart
                   "uart2",
-                  "pruss";  // Programmable realtime unit
+                  "pruss",       // Programmable realtime unit
+
+                  /* Analogs in */
+                  "P9.39",      // AIN0
+                  "P9.40",      // AIN1
+                  "P9.37",      // AIN2
+                  "P9.38",      // AIN3
+                  "P9.33",      // AIN4
+                  "P9.36",      // AIN5
+                  "P9.35",      // AIN6
+                  "tscadc",     // hardware ip used
+
+                  /* termreg PWM outpus */
+                  "P8.31",     // PWM0
+                  "P8.32";     // PWM1
 
   fragment@0 {
     target = <&am33xx_pinmux>;
@@ -68,11 +79,15 @@
 
           /* Component A */
           0x0e8 0x07  /* STEPA P8.28 */
-          0x07c 0x07  /* DIRA P8.26 */
+          0x0ec 0x07  /* DIRA  P8.30 */
 
           /* Component B */
-          0x078 0x07  /* STEPB P9.12 */
-          0x090 0x07  /* DIRB P8.7 */
+          0x090 0x07  /* STEPB P8.7 */
+          0x094 0x07  /* DIRB  P8.8 */
+
+          /* termreg PWM outpus */
+          0x0d8 0x07  /* PWM0  P8.31 */
+          0x0dc 0x07  /* PWM1  P8.32 */
         >;
       };
 
@@ -113,7 +128,7 @@
   };
 
   fragment@3 {
-    target = <&uart3>;
+    target = <&uart2>;
     __overlay__ {
       status = "okay";
       pinctrl-names = "default";
@@ -122,11 +137,25 @@
   };
 
   fragment@4 {
-    target = <&uart5>;
+    target = <&uart4>;
     __overlay__ {
       status = "okay";
       pinctrl-names = "default";
       pinctrl-0 = <&bb_uart4_pins>;
     };
   };
+
+  fragment@5 {
+    target = <&tscadc>;
+    __overlay__ {
+      status = "okay";
+      adc {
+        ti,adc-channels = <0 1 2 3 4 5 6>;
+        ti,chan-step-avg = <0x16 0x16 0x16 0x16 0x16 0x16 0x16>;
+        ti,chan-step-opendelay = <0x98 0x98 0x98 0x98 0x98 0x98 0x98>;
+        ti,chan-step-sampledelay = <0x0 0x0 0x0 0x0 0x0 0x0 0x0>;
+      };
+    };
+  };
+
 };

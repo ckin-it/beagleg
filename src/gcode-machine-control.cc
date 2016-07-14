@@ -820,7 +820,7 @@ void GCodeMachineControl::Impl::move_machine_steps(const struct AxisTarget *last
     = (accel_fraction + decel_fraction) * abs_defining_axis_steps;
   const float accel_decel_mm
     = (accel_decel_steps / cfg_.steps_per_mm[defining_axis]);
-  const char do_accel = (accel_decel_mm > 2 || accel_decel_steps > 16);
+  const char do_accel = (accel_decel_mm > 2 || accel_decel_steps > 64);
 #else
   const char do_accel = 1;
 #endif

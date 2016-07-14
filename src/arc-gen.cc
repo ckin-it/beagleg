@@ -38,6 +38,13 @@
 // CPU load. With 0.1mm arc segments, we can generate about 90 meter/second
 // of arcs with the BeagleBone Black CPU. Sufficient :)
 #define MM_PER_ARC_SEGMENT      0.1
+#define MAX_FEEDRATE 5000
+#define STEPS_RAMP 20
+
+struct ArcCallbackData {
+  void *callbacks;
+  float feedrate;
+};
 
 // Generate an arc. Input is the
 void arc_gen(enum GCodeParserAxis normal_axis,  // Normal axis of the arc-plane
@@ -64,7 +71,12 @@ void arc_gen(enum GCodeParserAxis normal_axis,  // Normal axis of the arc-plane
                              offset[plane[1]] * offset[plane[1]]);
   const float center_0 = position[plane[0]] + offset[plane[0]];
   const float center_1 = position[plane[1]] + offset[plane[1]];
-  const float linear_travel = target[plane[2]] - position[plane[2]];
+   // Allow multiple axes to be linearly interpolated
+  const float linear_travel[3] = {
+    target[plane[2]] - position[plane[2]],
+    target[AXIS_A] - position[AXIS_A],
+    target[AXIS_B] - position[AXIS_B],
+   };
   const float rt_0 = target[plane[0]] - center_0;
   const float rt_1 = target[plane[1]] - center_1;
 
@@ -76,8 +88,13 @@ void arc_gen(enum GCodeParserAxis normal_axis,  // Normal axis of the arc-plane
             gcodep_axis2letter(plane[0]), gcodep_axis2letter(plane[1]),
             position[plane[0]], position[plane[1]],
             target[plane[0]], target[plane[1]], radius,
-            gcodep_axis2letter(plane[2]), linear_travel);
+            gcodep_axis2letter(plane[2]),  linear_travel[0]);
 #endif
+
+  struct ArcCallbackData *cb_arc_data
+    = (struct ArcCallbackData *) segment_output_user_data;
+  const float max_feedrate
+    = MAX_FEEDRATE > cb_arc_data->feedrate ? cb_arc_data->feedrate : MAX_FEEDRATE;
 
   // CCW angle between position and target from circle center.
   float angular_travel = atan2(r_0*rt_1 - r_1*rt_0, r_0*rt_0 + r_1*rt_1);
@@ -88,7 +105,7 @@ void arc_gen(enum GCodeParserAxis normal_axis,  // Normal axis of the arc-plane
   }
 
   // Find the distance for this gcode in the axes we care.
-  const float mm_of_travel = hypotf(angular_travel*radius, fabs(linear_travel));
+  const float mm_of_travel = hypotf(angular_travel * radius, fabs(linear_travel[0]));
 
   // We don't care about non-XYZ moves (e.g. extruder)
   if (mm_of_travel < 0.00001)
@@ -98,9 +115,20 @@ void arc_gen(enum GCodeParserAxis normal_axis,  // Normal axis of the arc-plane
   const int segments = floorf(mm_of_travel / MM_PER_ARC_SEGMENT);
 
   const float theta_per_segment = angular_travel / segments;
-  const float linear_per_segment = linear_travel / segments;
+  const float linear_per_segment = linear_travel[0] / segments;
+
+  // Evaluate non "positional" linear segment partition
+  const float linear_per_segment_A = linear_travel[1] / segments;
+  const float linear_per_segment_B = linear_travel[2] / segments;
 
   for (int i = 1; i < segments; i++) { // Increment (segments-1)
+    // Hack to slowly accelerate thourgh the circle, work in progress to remove this
+    if (i < STEPS_RAMP) {
+        cb_arc_data->feedrate = max_feedrate * i / STEPS_RAMP;
+    } else if (segments - i < STEPS_RAMP) {
+        cb_arc_data->feedrate = max_feedrate * (segments - i) / STEPS_RAMP;
+    }
+
     const float cos_Ti = cosf(i * theta_per_segment);
     const float sin_Ti = sinf(i * theta_per_segment);
     r_0 = -offset[plane[0]] * cos_Ti + offset[plane[1]] * sin_Ti;
@@ -111,12 +139,16 @@ void arc_gen(enum GCodeParserAxis normal_axis,  // Normal axis of the arc-plane
     position[plane[1]] = center_1 + r_1;
     position[plane[2]] += linear_per_segment;
 
+    // And components target location
+    position[AXIS_A] += linear_per_segment_A;
+    position[AXIS_B] += linear_per_segment_B;
+
     // Emit
     segment_output(segment_output_user_data, position);
   }
 
   // Ensure last segment arrives at target location.
-  for (int axis = AXIS_X; axis <= AXIS_Z; axis++) {
+  for (int axis = AXIS_X; axis < GCODE_NUM_AXES; axis++) {
     position[axis] = target[axis];
   }
   segment_output(segment_output_user_data, position);

@@ -471,6 +471,9 @@ const char *GCodeParser::Impl::handle_arc(const char *line, bool is_cw) {
     else if (letter == 'K') offset[AXIS_Z] = unit_value;
     else if (letter == 'F') feedrate = f_param_to_feedrate(unit_value);
     else if (letter == 'P') turns = (int)value; // currently ignored
+    // Non "positional" axes
+    else if (letter == 'A') target[AXIS_A] = abs_axis_pos(AXIS_A, value);
+    else if (letter == 'B') target[AXIS_B] = abs_axis_pos(AXIS_B, value);
     // TODO: 'R'
     else break;
 

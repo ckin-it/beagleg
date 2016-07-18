@@ -98,6 +98,7 @@
 #define PIN_P8_30  (GPIO_2_BASE | 25)  // LCD_AC_BIAS_E
 #define PIN_P8_39  (GPIO_2_BASE | 12)  // LCD_DATA6
 #define PIN_P8_40  (GPIO_2_BASE | 13)  // LCD_DATA7
+#define PIN_P8_41  (GPIO_2_BASE | 10)  // LCD_DATA4
 #define PIN_P8_43  (GPIO_2_BASE | 8)   // LCD_DATA2
 #define PIN_P8_44  (GPIO_2_BASE | 9)   // LCD_DATA3
 

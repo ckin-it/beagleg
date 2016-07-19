@@ -59,7 +59,7 @@
                   "P8.15",      // Start
 
                   /* termreg PWM outpus */
-                  "P8.31",     // PWM0
+                  "P8.26",     // PWM0
                   "P8.32";     // PWM1
 
   fragment@0 {
@@ -89,7 +89,7 @@
           0x094 0x07  /* DIRB  P8.8 */
 
           /* termreg PWM outpus */
-          0x0d8 0x07  /* PWM0  P8.31 */
+          0x07c 0x07  /* PWM0  P8.26 */
           0x0dc 0x07  /* PWM1  P8.32 */
 
           /* Inputs */

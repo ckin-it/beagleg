@@ -46,11 +46,82 @@
 // an endswitch fires.
 struct PRUCommunication {
   volatile struct MotionSegment ring_buffer[QUEUE_LEN];
+  volatile struct QueueStatus status;
 };
 
 // The queue is a physical singleton, so simply reflect that here.
 static volatile struct PRUCommunication *pru_data_;
 static unsigned int queue_pos_;
+
+// Represents an already enqueued motion segment.
+// pru motion queue is steps-agnostic, It understands only low-level loops.
+struct HistorySegment {
+  uint32_t total_loops;
+  uint32_t fractions[MOTION_MOTOR_COUNT];
+  uint8_t direction_bits;
+};
+
+// Keeps track of the MotionSegments enqueued.
+static struct HistorySegment shadow_queue_[QUEUE_LEN];
+
+// Handle the absolute position in steps
+static FixedArray<int32_t, BEAGLEG_NUM_MOTORS> absolute_pos_loops_;
+
+static void update_absolute_position() {
+  int i;
+  const struct QueueStatus status_register = pru_data_->status;
+  const unsigned int last_insert_position = (queue_pos_ - 1) % QUEUE_LEN;
+  // Pru_queue_size represent the real pru queue size, so we shrink the history
+  // queue until it's exactly the same as the pru one.
+  const unsigned pru_queue_size
+    = (last_insert_position + QUEUE_LEN - status_register.index)
+      % QUEUE_LEN + 1;
+
+  if (pru_queue_size == 0) return;
+
+  while (execution_history_.size() > pru_queue_size) {
+    for (i = 0; i < MOTION_MOTOR_COUNT; ++i) {
+      (*current_position_steps_)[i] += execution_history_[0]->steps[i];
+    }
+    execution_history_.pop_front();
+  }
+
+  // Now update the current executing slot if it had steps.
+  if (execution_history_[0]->max_axis_steps) {
+    uint64_t delta;
+    for (i = 0; i < MOTION_MOTOR_COUNT; ++i) {
+      (*current_position_steps_)[i] -= last_partial[i];
+
+      delta = status_register.counter * abs(execution_history_[0]->steps[i]);
+      delta /= LOOPS_PER_STEP;
+      delta /= execution_history_[0]->max_axis_steps;
+
+      if (execution_history_[0]->steps[i] < 0) {
+        last_partial[i] = execution_history_[0]->steps[i] + delta;
+      } else {
+        last_partial[i] = execution_history_[0]->steps[i] - delta;
+      }
+      (*current_position_steps_)[i] += last_partial[i];
+    }
+  }
+}
+
+static void register_history_segment(MotionSegment *element) {
+  const unsigned int last_insert_position = (queue_pos_ - 1) % QUEUE_LEN;
+  struct HistorySegment *new_slot = &shadow_queue_[last_insert_position];
+
+  bzero(new_slot, sizeof(struct HistorySegment));
+
+  new_slot->total_loops += element->loops_accel;
+  new_slot->total_loops += element->loops_travel;
+  new_slot->total_loops += element->loops_decel;
+
+  new_slot->direction_bits = element->direction_bits;
+
+  for (int i = 0; i < MOTION_MOTOR_COUNT; ++i) {
+    new_slot->fractions[i] = element->fractions[i];
+  }
+}
 
 static volatile struct PRUCommunication *map_pru_communication() {
   void *result;
@@ -132,6 +203,10 @@ void PRUMotionQueue::Enqueue(MotionSegment *element) {
 
   // Fully initialized. Tell busy-waiting PRU by flipping the state.
   queue_element->state = state_to_send;
+
+  // Register the enqueued motion segment into the shadow_queue_.
+  register_history_segment(element);
+
 #ifdef DEBUG_QUEUE
   DumpMotionSegment(queue_element);
 #endif

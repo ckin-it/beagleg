@@ -72,6 +72,14 @@ struct MotionSegment {
 #endif
 } __attribute__((packed));
 
+// Layout of the status register
+// Assuming atomicity of 32 bit boundaries
+// This 32 bit value will be a copy of the R28 register of the PRU
+struct QueueStatus {
+  uint32_t counter : 24; // remaining number of cycles to be performed
+  uint32_t index : 8;    // represent the executing slot [0 to QUEUE_LEN - 1]
+};
+
 // Low level motion queue operations.
 class MotionQueue {
 public:

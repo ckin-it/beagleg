@@ -68,9 +68,15 @@ public:
 
   float acceleration_for_move(const int *axis_steps,
                               enum GCodeParserAxis defining_axis) {
-    return max_axis_accel_[defining_axis];
-    // TODO: we need to scale the acceleration if one of the other axes could't
-    // deal with it. Look at axis steps for that.
+    float ratio, max_offset = 1, offset;
+    const FloatAxisConfig &steps_per_mm = cfg_->steps_per_mm;
+    for (int i = 0; i < GCODE_NUM_AXES; ++i) {
+      ratio = fabs(((float) axis_steps[i] * steps_per_mm[defining_axis])
+              / (axis_steps[defining_axis] * steps_per_mm[i]));
+      offset = ratio > 0 ? max_axis_accel_[i] / (max_axis_accel_[defining_axis] * ratio) : 1;
+      if (offset < max_offset) max_offset = offset;
+    }
+    return max_axis_accel_[defining_axis] * max_offset;
   }
 
   // Avoid division by zero if there is no config defined for axis.

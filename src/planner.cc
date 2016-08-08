@@ -494,6 +494,7 @@ void Planner::Impl::machine_move(const AxesRegister &axis, float feedrate) {
   struct AxisTarget *new_pos = planning_buffer_.append();
   int max_steps = -1;
   enum GCodeParserAxis defining_axis = AXIS_X;
+  enum GCodeParserAxis euclidean_defining_axis = AXIS_X;
 
   // Real world -> machine coordinates. Here, we are rounding to the next full
   // step, but we never accumulate the error, as we always use the absolute
@@ -508,6 +509,7 @@ void Planner::Impl::machine_move(const AxesRegister &axis, float feedrate) {
     if (abs(new_pos->delta_steps[i]) > max_steps) {
       max_steps = abs(new_pos->delta_steps[i]);
       defining_axis = (enum GCodeParserAxis) i;
+      if (i <= AXIS_Z) euclidean_defining_axis = (enum GCodeParserAxis) i;
     }
   }
 

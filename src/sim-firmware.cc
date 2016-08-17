@@ -300,6 +300,31 @@ void SimFirmwareQueue::Enqueue(MotionSegment *segment) {
       break;  // done.
     }
     double wait_time = 1.0 * delay_loops / TIMER_FREQUENCY;
+
+#ifdef PAUSE_EXPERIMENT
+
+#ifndef PAUSE_TIMER
+#define PAUSE_TIMER -1
+#else
+    uint32_t pmult, pdiv, counter = 0;
+    // Simulate the host pushing mult and div in the pru.
+    get_speed_factor(sim_time, &pmult, &pdiv, PAUSE_TIMER);
+
+    // The pru sleep loop should now simply run mult times
+    // and once, using pdiv, there no need to make it a realtime process
+    // since for each pmult and pdiv, the execution will run normally but
+    // in a slow-motion way.
+
+    // Wait until pmult triggers the counter
+    while(counter & 0x80000000 == 0) {
+      counter += pmult;
+    }
+
+    // Last sleep is the remainder and it's fixed point division.
+
+#endif
+#endif
+
     averager_->PushDeltaTime(1.0 * hires_delay / TIMER_FREQUENCY);
     double acceleration = averager_->GetAcceleration();
     sim_time += wait_time;
@@ -338,4 +363,12 @@ SimFirmwareQueue::SimFirmwareQueue(FILE *out, int relevant_motors)
 
 SimFirmwareQueue::~SimFirmwareQueue() {
   delete averager_;
+}
+
+
+static uint32_t get_speed_factor(const double sim_time, uint32_t *pmult,
+                                 uint32_t &pdiv, const double trigger) {
+  if (trigger < 0) {
+    return 0x80000000;
+  }
 }

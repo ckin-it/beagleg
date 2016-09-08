@@ -25,7 +25,7 @@
 #define MOTOR_ENABLE_GPIO  PIN_P9_25  // ENn
 #define MOTOR_ENABLE_IS_ACTIVE_HIGH 1  // 1 if EN, 0 if ~EN
 
-#define MOTOR_1_STEP_GPIO  PIN_P8_11  // motor 1
+#define MOTOR_1_STEP_GPIO  PIN_P8_43  // motor 1
 
 #define MOTOR_1_DIR_GPIO   PIN_P8_12  // motor 1
 

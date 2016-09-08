@@ -22,7 +22,7 @@
                   "P8.8",        /* DIR GPO10 OUT*/
 
                   /* A component */
-                  "P8.11",        /* STEP GPO1 OUT*/
+                  "P8.43",        /* STEP GPO1 OUT*/
                   "P8.12",        /* DIR GPO2 OUT*/
 
                   /* End Switch */
@@ -62,7 +62,7 @@
           0x1ac 0x17 /* P9_25, pullup */
 
           /* Motor step pins */
-          0x034 0x07  /* STEPX P8.11 */
+          0x0a8 0x17  /* STEPX P8.43 */
 
           /* Motor dir pins */
           0x030 0x07  /* DIRX P8.12 */

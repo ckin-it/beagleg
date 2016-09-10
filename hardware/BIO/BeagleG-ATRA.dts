@@ -25,8 +25,12 @@
                   "P8.43",        /* STEP GPO1 OUT*/
                   "P8.12",        /* DIR GPO2 OUT*/
 
-                  /* End Switch */
+                  /* Rod Switch */
                   "P9.27",
+
+                  /* End Switches */
+                  "P9.41",
+                  "P8.16",
 
                   /* the peripherals used */
                   "uart4",       // TMCL uart
@@ -67,8 +71,12 @@
           /* Motor dir pins */
           0x030 0x07  /* DIRX P8.12 */
 
-          /* End Switch */
+          /* Rod Switch */
           0x1a4 0x27  /* P9_27, endswitch */
+
+          /* End Switches */
+          0x1b4 0x20  /* P9_41, endswitch */
+          0x038 0x20  /* P8_16, endswitch */
 
           /* Valves */
           0x090 0x07  /* STEPB P8.7 */

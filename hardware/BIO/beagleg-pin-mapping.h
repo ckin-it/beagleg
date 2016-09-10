@@ -29,7 +29,8 @@
 
 #define MOTOR_1_DIR_GPIO   PIN_P8_12  // motor 1
 
-#define IN_1_GPIO          PIN_P8_41  // END_Y
+#define IN_1_GPIO          PIN_P9_41  // END_DOWN
+#define IN_2_GPIO          PIN_P8_16  // END_UP
 
 #define AUX_1_GPIO         PIN_P8_7  // AUX_2 "Aux, Open Collector"
 #define AUX_2_GPIO         PIN_P8_8  // AUX_2 "Aux, Open Collector"

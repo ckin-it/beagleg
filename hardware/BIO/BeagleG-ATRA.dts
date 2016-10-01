@@ -63,20 +63,20 @@
       beagleg_gpio_pins: BeagleG_Pins {
         pinctrl-single,pins = <
           /* Motor enable */
-          0x1ac 0x17 /* P9_25, pullup */
+          0x1ac 0x07 /* P9_25, pullup */
 
           /* Motor step pins */
-          0x0a8 0x17  /* STEPX P8.43 */
+          0x0a8 0x07  /* STEPX P8.43 */
 
           /* Motor dir pins */
           0x030 0x07  /* DIRX P8.12 */
 
           /* Rod Switch */
-          0x1a4 0x27  /* P9_27, endswitch */
+          0x1a4 0x27  /* P9_27, rod_switch */
 
           /* End Switches */
-          0x1b4 0x20  /* P9_41, endswitch */
-          0x038 0x20  /* P8_16, endswitch */
+          //0x1b4 0x30  /* P9_41, endswitch */
+          //0x038 0x30  /* P8_16, endswitch */
 
           /* Valves */
           0x090 0x07  /* STEPB P8.7 */

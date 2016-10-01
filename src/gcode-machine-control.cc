@@ -717,7 +717,7 @@ void GCodeMachineControl::Impl::home_axis(enum GCodeParserAxis axis) {
   const float home_pos = ((trigger == HardwareMapping::TRIGGER_MAX)
                           ? cfg_.move_range_mm[axis]
                           : 0.0f);
-  const float kHomingSpeed = 15; // mm/sec  (make configurable ?)
+  const float kHomingSpeed = 1; // mm/sec  (make configurable ?)
 
   planner_->BringPathToHalt();
   if (hardware_mapping_->IsHardwareSimulated()) {

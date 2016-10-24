@@ -85,9 +85,11 @@ plot "/tmp/foo.data" using 1:3 title "velocity Euclid" with lines ls 1, '' using
 #include <stdint.h>
 #include <strings.h>
 #include <stdio.h>
+#include <errno.h>
 
 #include "motion-queue.h"
 #include "motor-interface-constants.h"
+#include "logging.h"
 
 #define LOOPS_PER_STEP (1 << 1)
 
@@ -138,7 +140,6 @@ private:
   int pos_;
 };
 
-
 struct HardwareState {
   // Internal state
   uint32_t m[MOTION_MOTOR_COUNT];
@@ -160,6 +161,48 @@ enum {
 static double euclid(double x, double y, double z) {
   return sqrt(x*x + y*y + z*z);
 }
+
+#ifdef PAUSE_EXPERIMENT
+uint32_t mult(const uint16_t b, const uint16_t c) {
+  uint32_t result = 0;
+  for (int i = 0; i < 16; ++i) {
+    if (b & 1 << i) result += c << i;
+  }
+  result = result + ((result & 1 << (16 - 1)) << 1);
+  return result;
+}
+
+// Functions that evaluates a software multiplication between an unsiged
+// integer and a float value between 0 and 1.
+uint32_t fp_mult(const uint32_t delay, const float frac) {
+  // convert it into fixed point.
+  uint32_t b = frac * (1 << 16);
+  const uint16_t lsb = delay & 0x0000FFFF;
+  const uint16_t msb = (delay & 0xFFFF0000) >> 16;
+  // Multiply first 16 LSB
+  const uint32_t result1 = mult(lsb, b) >> 16;
+  // Multiply last 16 MSB
+  const uint32_t result2 = mult(msb, b);
+  // Sum up to return the result.
+  return result1 + result2;
+}
+
+// Pause completely in this number of seconds.
+#ifndef PAUSE_SECONDS
+#define PAUSE_SECONDS 0.2
+#endif
+#ifndef PAUSE_START_TIME
+#define PAUSE_START_TIME 0
+#endif
+void get_speed_factor(const double sim_time, float *factor) {
+  if (sim_time > PAUSE_START_TIME) {
+    *factor = 1 - (sim_time - PAUSE_START_TIME) / PAUSE_SECONDS;
+    *factor = (*factor > 0) ? 1 / *factor : 65536;
+  } else {
+    *factor = 1;
+  }
+}
+#endif
 
 // This simulates what happens in the PRU. For testing purposes.
 void SimFirmwareQueue::Enqueue(MotionSegment *segment) {
@@ -299,40 +342,37 @@ void SimFirmwareQueue::Enqueue(MotionSegment *segment) {
     else {
       break;  // done.
     }
-    double wait_time = 1.0 * delay_loops / TIMER_FREQUENCY;
 
+    uint64_t ldelay_loops = 0;
 #ifdef PAUSE_EXPERIMENT
+    // Simulate the host pushing the fixed point factor.
+    float factor = 0;
+    get_speed_factor(sim_time, &factor);
+    float itgr;
+    float fractional = modf(factor, &itgr);
+    int integral = int(itgr);
 
-#ifndef PAUSE_TIMER
-#define PAUSE_TIMER -1
-#else
-    uint32_t pmult, pdiv, counter = 0;
-    // Simulate the host pushing mult and div in the pru.
-    get_speed_factor(sim_time, &pmult, &pdiv, PAUSE_TIMER);
-
-    // The pru sleep loop should now simply run mult times
-    // and once, using pdiv, there no need to make it a realtime process
-    // since for each pmult and pdiv, the execution will run normally but
-    // in a slow-motion way.
-
-    // Wait until pmult triggers the counter
-    while(counter & 0x80000000 == 0) {
-      counter += pmult;
+    // Repeat the delay for intergral times.
+    for (; integral > 0; --integral) {
+      ldelay_loops += delay_loops;
     }
+    // Now multiply the delay for the fractional part
+    ldelay_loops += fp_mult(delay_loops, fractional);
 
-    // Last sleep is the remainder and it's fixed point division.
-
+    // We want to change both hidres_delay and wait_time
+    hires_delay *= factor;
+#else
+    ldelay_loops = delay_loops;
 #endif
-#endif
-
+    double wait_time = 1.0 * ldelay_loops / TIMER_FREQUENCY;
     averager_->PushDeltaTime(1.0 * hires_delay / TIMER_FREQUENCY);
     double acceleration = averager_->GetAcceleration();
     sim_time += wait_time;
     double velocity = (1 / wait_time) / LOOPS_PER_STEP;  // in Hz.
 
     // Total time; speed; acceleration; delay_loops. [steps walked for all motors].
-    fprintf(out_, "%12.8f %10d %12.4f %12.4f      ",
-            sim_time, delay_loops,
+    fprintf(out_, "%12.8f %20lu %12.4f %12.4f      ",
+            sim_time, ldelay_loops,
             euklid_factor * velocity,
             euklid_factor * acceleration);
     for (int i = 0; i < relevant_motors_; ++i) {
@@ -351,7 +391,7 @@ SimFirmwareQueue::SimFirmwareQueue(FILE *out, int relevant_motors)
                      : MOTION_MOTOR_COUNT),
     averager_(new Averager()) {
   // Total time; speed; acceleration; delay_loops. [steps walked for all motors].
-  printf("%12s %10s %12s %12s      ", "time", "timer-loop", "Euclid-speed", "Euclid-accel");
+  printf("%12s %20s %12s %12s      ", "time", "timer-loop", "Euclid-speed", "Euclid-accel");
   for (int i = 0; i < relevant_motors_; ++i) {
     fprintf(out_, "%4s%d %9s%d %11s%d ",
             "s", i,
@@ -363,12 +403,4 @@ SimFirmwareQueue::SimFirmwareQueue(FILE *out, int relevant_motors)
 
 SimFirmwareQueue::~SimFirmwareQueue() {
   delete averager_;
-}
-
-
-static uint32_t get_speed_factor(const double sim_time, uint32_t *pmult,
-                                 uint32_t &pdiv, const double trigger) {
-  if (trigger < 0) {
-    return 0x80000000;
-  }
 }

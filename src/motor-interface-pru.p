@@ -29,7 +29,7 @@
 
 #define QUEUE_ELEMENT_SIZE (SIZE(QueueHeader) + SIZE(TravelParameters))
 #define QUEUE_OFFSET 4
-#define SKIP_FRAC (QUEUE_LEN * QUEUE_ELEMENT_SIZE)
+#define TIME_FACTOR (QUEUE_LEN * QUEUE_ELEMENT_SIZE + QUEUE_OFFSET)
 
 #define PARAM_START r7
 #define PARAM_END  r19
@@ -265,13 +265,12 @@ STEP_GEN:
 
 WAIT_RESUME:
 	;; Store the address of the loop skip fractions
-	MOV r4, SKIP_FRAC
+	MOV r4, TIME_FACTOR
 	;; Update the loop_skip fraction
 	LBCO &r4, CONST_PRUDRAM, r4, 4
-	;; Set to zero the counter
-	QBEQ WAIT_RESUME, r4, 0
-
-	MOV r5, 0
+	;; If the skip frac is 0xffffffff, let's stop completely.
+	MOV r5, 0xffffffff
+	QBEQ WAIT_RESUME, r4, r5
 
 RESET_COUNTER:
 	MOV r6, r1
@@ -280,13 +279,26 @@ STEP_DELAY:				; Create time delay between steps.
 	SUB r6, r6, 1                   ; two cycles per loop.
 	QBNE STEP_DELAY, r6, 0
 
-	;; r4 == 0, special value, we are in a complete stop. Let's wait for a resume
-	QBEQ WAIT_RESUME, r4, 0
+	;; Substract the integral part of the factor
+	SUB r4.w2, r4.w2, 1
+	QBNE RESET_COUNTER, r4.w2, 0
 
-	;; Add the delay fraction to the skip counter
-	ADD r5, r5, r4
-	;; If the 32 bit is not set in the skip counter do another delay
-	QBBC RESET_COUNTER, r5, 31
+	;; Now the fractional part, this is a multiplication between
+	;; the 16bit LSB of the factor, and r1
+
+	;; Multiply
+	CLR r25, 0
+	XOUT 0, R25, 1
+	MOV r28, r4 ; First operand
+	MOV r29, r1 ; Second operand
+	XIN 0, R26, 4 ; Read 32 bit from the hardware multiplier
+	XIN 0, R27, 4 ; Read 32 bit from the hardware multiplier
+
+	;; Wait
+FRAC_DELAY:
+	SUB r26, r26, 1                   ; two cycles per loop.
+	QBNE FRAC_DELAY, r26, 0
+
 	JMP STEP_GEN
 
 DONE_STEP_GEN:

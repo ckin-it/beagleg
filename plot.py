@@ -29,13 +29,14 @@ def get_data(pause=True, pause_start=0, pause_seconds=0.2):
     return data
 
 plt.close('all')
-data = get_data(pause=True, pause_start=2)
+data = get_data(pause=True, pause_start=2.0228, pause_seconds=1)
 data2 = get_data(pause=False)
 f, axarr = plt.subplots(2, sharex=True)
 axarr[0].plot(data['t'], data['euclidspeed'], color='r')
 axarr[0].plot(data2['t'], data2['euclidspeed'], color='b')
 axarr[0].set_title('Speed and accel')
-axarr[1].plot(data['t'], data['euclidaccel'])
-axarr[0].set_xlim([-1, 10])
+axarr[1].plot(data['t'], data['euclidaccel'], color='r')
+axarr[1].plot(data2['t'], data2['euclidaccel'], color='b')
+axarr[0].set_xlim([-0.04, 2.2])
 
 plt.show()

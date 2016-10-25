@@ -189,11 +189,13 @@ uint32_t fp_mult(const uint32_t delay, const float frac) {
 
 // Pause completely in this number of seconds.
 #ifndef PAUSE_SECONDS
-#define PAUSE_SECONDS 0.2
+  #define PAUSE_SECONDS 0.2
 #endif
+
 #ifndef PAUSE_START_TIME
-#define PAUSE_START_TIME 0
+  #define PAUSE_START_TIME 0
 #endif
+
 void get_speed_factor(const double sim_time, float *factor) {
   if (sim_time > PAUSE_START_TIME) {
     *factor = 1 - (sim_time - PAUSE_START_TIME) / PAUSE_SECONDS;

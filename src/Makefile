@@ -89,7 +89,7 @@ test-html: test-out/test.html
 test-out/test.html: gcode2ps test-create-html.sh testdata/*.gcode
 	./test-create-html.sh testdata/*.gcode
 
-speed-control-client: speed-control-client.o $(OBJECTS)
+pause-client: pause-client.o $(OBJECTS)
 	$(CROSS_COMPILE)$(CXX) $(CFLAGS) -o $@ $^ $(PRUSS_LIBS) $(LDFLAGS)
 
 test: $(UNITTEST_BINARIES)

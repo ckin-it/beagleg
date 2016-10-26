@@ -43,7 +43,7 @@
 struct PRUCommunication {
   volatile struct QueueStatus status;
   volatile struct MotionSegment ring_buffer[QUEUE_LEN];
-  volatile uint32_t skip_frac;
+  volatile uint32_t time_factor;
 } __attribute__((packed));
 
 #ifdef DEBUG_QUEUE
@@ -215,7 +215,7 @@ bool PRUMotionQueue::Init() {
     pru_data_->ring_buffer[i].state = STATE_EMPTY;
   }
   queue_pos_ = 0;
-  pru_data_->skip_frac = 0xFFFFFFFF;
+  pru_data_->time_factor = 0x00010000;
 
   return pru_interface_->StartExecution();
 }

@@ -293,11 +293,14 @@ STEP_DELAY:				; Create time delay between steps.
 	MOV r29, r1 ; Second operand
 	XIN 0, R26, 4 ; Read 32 bit from the hardware multiplier
 	XIN 0, R27, 4 ; Read 32 bit from the hardware multiplier
+	MOV r6, r26;
+	LSR r6, r6, 16
 
+	QBEQ STEP_GEN, r26, 0       ; special value 0: all steps consumed.
 	;; Wait
 FRAC_DELAY:
-	SUB r26, r26, 1                   ; two cycles per loop.
-	QBNE FRAC_DELAY, r26, 0
+	SUB r6, r6, 1                   ; two cycles per loop.
+	QBNE FRAC_DELAY, r6, 0
 
 	JMP STEP_GEN
 

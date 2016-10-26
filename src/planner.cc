@@ -422,7 +422,7 @@ void Planner::Impl::move_machine_steps(const struct AxisTarget *last_pos,
     = (accel_fraction + decel_fraction) * abs_defining_axis_steps;
   const float accel_decel_mm
     = (accel_decel_steps / cfg_->steps_per_mm[defining_axis]);
-  const char do_accel = (accel_decel_mm > 2 || accel_decel_steps > 16);
+  const char do_accel = (accel_decel_mm > 2 || accel_decel_steps > 64);
 #else
   const char do_accel = 1;
 #endif
@@ -496,7 +496,6 @@ void Planner::Impl::machine_move(const AxesRegister &axis, float feedrate) {
   struct AxisTarget *new_pos = planning_buffer_.append();
   int max_steps = -1;
   enum GCodeParserAxis defining_axis = AXIS_X;
-  enum GCodeParserAxis euclidean_defining_axis = AXIS_X;
 
   // Real world -> machine coordinates. Here, we are rounding to the next full
   // step, but we never accumulate the error, as we always use the absolute

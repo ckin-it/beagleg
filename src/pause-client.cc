@@ -89,6 +89,7 @@ void start(const enum state action, const float t,
       factor = 1 - ct / t;
       factor = 1 / factor;
       pru_data->time_factor = factor * (1 << 16);
+      ct = get_time(start_time);
     }
     pru_data->time_factor = 0xffffffff;
     printf("Pause Completed\n");
@@ -97,6 +98,7 @@ void start(const enum state action, const float t,
       factor = ct / t;
       factor = 1 / factor;
       pru_data->time_factor = factor * (1 << 16);
+      ct = get_time(start_time);
     }
     pru_data->time_factor = 0x00010000;
     printf("Resume Completed\n");

@@ -70,7 +70,7 @@ void anlog_control(const int analog_pin,
 float get_time(struct timeval s_time) {
   struct timeval t;
   gettimeofday(&t, 0);
-  long elapsed = (t.tv_sec - s_time.tv_sec) * 1e6 + t.tv_usec - s_time.tv_usec;
+  long elapsed = (t.tv_sec - s_time.tv_sec) * 1e6f + t.tv_usec - s_time.tv_usec;
   return elapsed / 1e6f;
 }
 
@@ -80,13 +80,13 @@ void start(const enum state action, const float t,
   struct timeval start_time;
   gettimeofday(&start_time, 0);
   float ct;
-  float factor;
-
   ct = get_time(start_time);
 
   if (action == PAUSE) {
+    float factor;
     while(ct < t) {
       factor = 1 - ct / t;
+      printf("%%: %f\n", factor);
       factor = 1 / factor;
       pru_data->time_factor = factor * (1 << 16);
       ct = get_time(start_time);
@@ -94,8 +94,10 @@ void start(const enum state action, const float t,
     pru_data->time_factor = 0xffffffff;
     printf("Pause Completed\n");
   } else {
+    float factor;
     while(ct < t) {
       factor = ct / t;
+      printf("%%: %f\n", factor);
       factor = 1 / factor;
       pru_data->time_factor = factor * (1 << 16);
       ct = get_time(start_time);

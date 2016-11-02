@@ -296,7 +296,7 @@ STEP_DELAY:				; Create time delay between steps.
 	MOV r6, r26;
 	LSR r6, r6, 16
 
-	QBEQ STEP_GEN, r26, 0       ; special value 0: all steps consumed.
+	QBEQ STEP_GEN, r6, 0       ; special value 0: all steps consumed.
 	;; Wait
 FRAC_DELAY:
 	SUB r6, r6, 1                   ; two cycles per loop.

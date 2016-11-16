@@ -70,7 +70,7 @@ public:
                               enum GCodeParserAxis defining_axis) {
     float ratio, max_offset = 1, offset;
     const FloatAxisConfig &steps_per_mm = cfg_->steps_per_mm;
-    for (int i = 0; i < GCODE_NUM_AXES; ++i) {
+    for (const GCodeParserAxis i : AllAxes()) {
       ratio = fabs(((float) axis_steps[i] * steps_per_mm[defining_axis])
               / (axis_steps[defining_axis] * steps_per_mm[i]));
       offset = ratio > 0 ? max_axis_accel_[i] / (max_axis_accel_[defining_axis] * ratio) : 1;

@@ -458,7 +458,8 @@ int main(int argc, char *argv[]) {
       return 1;
     }
     pru_hw_interface = new UioPrussInterface();
-    motion_backend = new PRUMotionQueue(&hardware_mapping, pru_hw_interface);
+    motion_backend = new PRUMotionQueue(&hardware_mapping, pru_hw_interface,
+                                        &event_server);
   }
 
   // Listen port bound, GPIO initialized. Ready to drop privileges.
@@ -502,6 +503,12 @@ int main(int argc, char *argv[]) {
                      bind_addr, listen_port);
   }
 
+  // Add the shovel, grpc, etc..
+  // Instantiate the shovel and pass it to the motion-queue instance
+  // the second queue is inside the motion-queue
+  // add the shovel to the muxer
+  // The motion queue, will enable() disable() the shovel whenever
+  // there's something inside the host queue.
   event_server.Loop();
 
   if (listen_socket >= 0) {

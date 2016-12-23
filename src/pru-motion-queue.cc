@@ -29,6 +29,7 @@
 #include <stdlib.h>
 
 #include "generic-gpio.h"
+#include "fd-mux.h"
 #include "pwm-timer.h"
 #include "logging.h"
 #include "hardware-mapping.h"
@@ -142,7 +143,7 @@ static void unaligned_memcpy(volatile void *dest, const void *src, size_t size) 
   }
 }
 
-void PRUMotionQueue::Enqueue(MotionSegment *element) {
+void PRUMotionQueue::EnqueueInPru(MotionSegment *element) {
   const uint8_t state_to_send = element->state;
   assert(state_to_send != STATE_EMPTY);  // forgot to set proper state ?
   // Initially, we copy everything with 'STATE_EMPTY', then flip the state
@@ -150,9 +151,6 @@ void PRUMotionQueue::Enqueue(MotionSegment *element) {
   element->state = STATE_EMPTY;
 
   queue_pos_ %= QUEUE_LEN;
-  while (pru_data_->ring_buffer[queue_pos_].state != STATE_EMPTY) {
-    pru_interface_->WaitEvent();
-  }
 
   volatile MotionSegment *queue_element = &pru_data_->ring_buffer[queue_pos_++];
   unaligned_memcpy(queue_element, element, sizeof(*queue_element));
@@ -162,9 +160,43 @@ void PRUMotionQueue::Enqueue(MotionSegment *element) {
 
   // Register the last inserted motion segment in the shadow queue.
   RegisterHistorySegment(*element);
-#ifdef DEBUG_QUEUE
-  DumpMotionSegment(queue_element, pru_data_);
-#endif
+}
+
+void PRUMotionQueue::EnableShovel() {
+  // Register the callback in the muxer with the event fd
+  overflow_ = true;
+  fmux_->RunOnReadable(pru_interface_->EventFd(),
+                      [this](){ return Shovel(); });
+}
+
+bool PRUMotionQueue::Shovel() {
+  // We got the interrupt, let's push all the segments as much as we can
+  while (pru_data_->ring_buffer[queue_pos_].state == STATE_EMPTY) {
+    EnqueueInPru(&overflow_queue_.front());
+    overflow_queue_.pop();
+  }
+
+  if (overflow_queue_.empty()) {
+    overflow_ = false;
+    return false;
+  }
+  // Disable
+  else return true;
+}
+
+void PRUMotionQueue::Enqueue(MotionSegment *element) {
+  if (overflow_) overflow_queue_.push(*element);
+  else if (pru_data_->ring_buffer[queue_pos_].state != STATE_EMPTY) {
+    // Queue full, push it in the overflow queue, trigger the shovel.
+    overflow_queue_.push(*element);
+    EnableShovel();
+  } else {
+    EnqueueInPru(element);
+  }
+
+  #ifdef DEBUG_QUEUE
+    DumpMotionSegment(queue_element, pru_data_);
+  #endif
 }
 
 void PRUMotionQueue::WaitQueueEmpty() {
@@ -191,10 +223,14 @@ void PRUMotionQueue::Shutdown(bool flush_queue) {
 
 PRUMotionQueue::~PRUMotionQueue() { delete [] shadow_queue_; }
 
-PRUMotionQueue::PRUMotionQueue(HardwareMapping *hw, PruHardwareInterface *pru)
+PRUMotionQueue::PRUMotionQueue(HardwareMapping *hw, PruHardwareInterface *pru,
+                               FDMultiplexer *fmux)
                                : hardware_mapping_(hw),
                                  pru_interface_(pru),
-                                 shadow_queue_(new HistorySegment[QUEUE_LEN]) {
+                                 shadow_queue_(new HistorySegment[QUEUE_LEN]),
+                                 fmux_(fmux),
+                                 overflow_(false),
+                                 overflow_queue_() {
   const bool success = Init();
   // For now, we just assert-fail here, if things fail.
   // Typically hardware-doomed event anyway.

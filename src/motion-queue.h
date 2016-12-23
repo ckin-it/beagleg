@@ -22,6 +22,8 @@
 #include <stdint.h>
 #include "pru-hardware-interface.h"
 #include "container.h"
+#include "fd-mux.h"
+#include <queue>
 
 // Number of motors handled by motion segment.
 // TODO: this and BEAGLEG_NUM_MOTORS should be coming from the same place.
@@ -119,7 +121,8 @@ struct PRUCommunication;
 struct HistorySegment;
 class PRUMotionQueue : public MotionQueue {
 public:
-  PRUMotionQueue(HardwareMapping *hw, PruHardwareInterface *pru);
+  PRUMotionQueue(HardwareMapping *hw, PruHardwareInterface *pru,
+                 FDMultiplexer *fmux);
   ~PRUMotionQueue();
 
   void Enqueue(MotionSegment *segment);
@@ -141,6 +144,14 @@ private:
   void RegisterHistorySegment(const MotionSegment &element);
 
   struct HistorySegment *const shadow_queue_;
+
+  // Overflow queue stuff
+  FDMultiplexer *const fmux_;
+  void EnqueueInPru(MotionSegment *element);
+  void EnableShovel();
+  bool Shovel();
+  bool overflow_;
+  std::queue<struct MotionSegment> overflow_queue_;
 };
 
 

@@ -20,6 +20,7 @@
 #define _BEAGLEG_MOTOR_OPERATIONS_H_
 
 #include <stdio.h>
+#include "fd-mux.h"
 
 class MotionQueue;
 
@@ -62,22 +63,49 @@ public:
 
   // Wait, until all elements in the ring-buffer are consumed.
   virtual void WaitQueueEmpty() = 0;
+
+  virtual void GetRealtimePosition(int pos_steps[BEAGLEG_NUM_MOTORS]) {}
+  virtual void RunAsyncStop(FDMultiplexer *event_server) {}
+  virtual void RunAsyncPause(FDMultiplexer *event_server) {}
+  virtual void RunAsyncResume(FDMultiplexer *event_server) {}
+
+  typedef std::function<void()> Callback;
+  virtual void OnEmptyQueue(FDMultiplexer *event_server,
+                            const Callback &handler) {}
 };
+
+typedef enum state {
+  IDLE, // Just created
+  RUNNING, // Normal
+  STOPPED, // Paused or stopped
+  BUSY // Async tasks are actually executing
+} State;
 
 class MotionQueueMotorOperations : public MotorOperations {
 public:
   // Initialize motor operations, sending planned results into the motion backend.
-  MotionQueueMotorOperations(MotionQueue *backend) : backend_(backend) {}
+  MotionQueueMotorOperations(MotionQueue *backend) : backend_(backend),
+                                                     state_(IDLE){}
 
   virtual void Enqueue(const LinearSegmentSteps &segment);
   virtual void MotorEnable(bool on);
   virtual void WaitQueueEmpty();
 
+  virtual void GetRealtimePosition(int pos_steps[BEAGLEG_NUM_MOTORS]);
+  virtual void RunAsyncStop(FDMultiplexer *event_server);
+  virtual void RunAsyncPause(FDMultiplexer *event_server);
+  virtual void RunAsyncResume(FDMultiplexer *event_server);
+
+  virtual void OnEmptyQueue(FDMultiplexer *event_server,
+                            const Callback &handler);
+
 private:
+  void execute_callback_if_queue_empty();
   void EnqueueInternal(const LinearSegmentSteps &param,
                        int defining_axis_steps);
 
   MotionQueue *backend_;
+  State state_;
 };
 
 #endif  // _BEAGLEG_MOTOR_OPERATIONS_H_

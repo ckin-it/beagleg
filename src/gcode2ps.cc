@@ -613,13 +613,13 @@ int main(int argc, char *argv[]) {
                                          show_speeds);
     GCodeMachineControl *machine_control
       = GCodeMachineControl::Create(machine_config, &motor_printer,
-                                    &hardware, &spindle, stderr);
+                                    &hardware, &spindle, NULL, stderr);
     if (!machine_control) {
       // Ups, let's do it again with logging enabled.
       Log_init("/dev/stderr");
       Log_error("Cannot initialize machine:");
       GCodeMachineControl::Create(machine_config, &motor_printer,
-                                  &hardware, &spindle, stderr);
+                                  &hardware, &spindle, NULL, stderr);
     } else {
       machine_control->SetMsgOut(NULL);
       motor_printer.SetPass(1);

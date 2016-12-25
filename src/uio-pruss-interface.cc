@@ -94,3 +94,7 @@ bool UioPrussInterface::Shutdown() {
   prussdrv_exit();
   return true;
 }
+
+void UioPrussInterface::ResetPru() {
+  prussdrv_pru_reset(PRU_NUM);
+}

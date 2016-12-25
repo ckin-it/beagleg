@@ -149,6 +149,9 @@ public:
   // If this function is never called, all outputs are simulated.
   bool InitializeHardware();
 
+  void AssignMotorsStepsToAxis(int target[GCODE_NUM_AXES],
+                               int source[NUM_MOTORS]);
+
   // This returns if we are in hardware simulation mode.
   bool IsHardwareSimulated() { return !is_hardware_initialized_; }
 

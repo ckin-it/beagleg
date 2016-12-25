@@ -20,6 +20,7 @@
 #define _BEAGLEG_PLANNER_H_
 
 #include "gcode-parser.h"  // AxesRegister
+#include "fd-mux.h"
 
 struct MachineControlConfig;
 class HardwareMapping;
@@ -33,7 +34,8 @@ public:
   // The planner writes out motor operations to the backend.
   Planner(const MachineControlConfig *config,
           HardwareMapping *hardware_mapping,
-          MotorOperations *motor_backend);
+          MotorOperations *motor_backend,
+          FDMultiplexer *event_server);
   ~Planner();
 
   // Enqueue a new target position to go to in a linear movement from
@@ -47,6 +49,8 @@ public:
   // Get the latest position enqueued to the motors.
   // TODO(Leonardo): get actual position of the motor at this moment.
   void GetCurrentPosition(AxesRegister *pos);
+
+  void ExternalSetPathIsHalted();
 
   // Drive an axis directly. Should only be used for cases such as
   // homing which require direct motor driving.
@@ -63,6 +67,10 @@ public:
   // machine move outside of the control of the Planner.
   // Precondition: BringPathToHalt() had been called before.
   void SetExternalPosition(GCodeParserAxis axis, float pos);
+
+  typedef std::function<void()> InputControl;
+  void SetInputControls(const InputControl &enable_input,
+                        const InputControl &disable_input);
 
 private:
   class Impl;

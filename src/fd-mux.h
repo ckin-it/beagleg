@@ -18,6 +18,7 @@ public:
     // Returns false if that filedescriptor is already registered.
     bool RunOnReadable(int fd, const Handler &handler);
     bool IsRegisteredReadable(int fd) const;
+    bool Pop(int fd);
 
     // Run the main loop. Blocks while there is still a filedescriptor
     // registered.

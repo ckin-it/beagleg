@@ -192,10 +192,8 @@ static int run_server(int listen_socket, FDMultiplexer *event_server,
   Log_info("Ready to accept GCode-connections on %s:%d",
            bind_addr ? bind_addr : "0.0.0.0", port);
 
-  bool already_running = false;
   event_server->RunOnReadable(listen_socket,
-                              [listen_socket,event_server,machine,parser,&already_running]() {
-      int process_result;
+                              [listen_socket,event_server,machine,parser]() {
       struct sockaddr_in client;
       socklen_t socklen = sizeof(client);
       struct sigaction sa = {};
@@ -208,14 +206,13 @@ static int run_server(int listen_socket, FDMultiplexer *event_server,
         Log_error("accept(): %s", strerror(errno));
         return true;
       }
-      if (already_running) {
+      if (parser->already_running()) {
         // For now, only one. Though we could have multiple.
         dprintf(connection, "// Sorry, can only handle one connection at a time."
                 "There is only one machine after all.\n");
         close(connection);
         return true;
       }
-      already_running = true;
       sa.sa_handler = SIG_DFL;
       sigaction(SIGINT, &sa, NULL);
       sigaction(SIGTERM, &sa, NULL);
@@ -224,14 +221,12 @@ static int run_server(int listen_socket, FDMultiplexer *event_server,
       const char *print_ip = inet_ntop(AF_INET, &client.sin_addr,
                                        ip_buffer, sizeof(ip_buffer));
       Log_info("Accepting new connection from %s\n", print_ip);
+
       FILE *msg_stream = fdopen(connection, "w");
       machine->SetMsgOut(msg_stream);
-      process_result = parser->ParseStream(connection, msg_stream);
+      parser->StartAsyncStream(connection, event_server, msg_stream);
 
-      fclose(msg_stream);
-      Log_info("Connection to %s closed.\n", print_ip);
-      already_running = false;
-      return process_result == 0;
+      return true;
     });
 
   return 0;
@@ -478,6 +473,7 @@ int main(int argc, char *argv[]) {
   GCodeMachineControl *machine_control
     = GCodeMachineControl::Create(config, &motor_operations,
                                   &hardware_mapping, &spindle,
+                                  &event_server,
                                   stderr);
   if (machine_control == NULL) {
     Log_error("Exiting. Cannot initialize machine control.");

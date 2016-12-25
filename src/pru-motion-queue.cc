@@ -199,11 +199,39 @@ void PRUMotionQueue::Enqueue(MotionSegment *element) {
   #endif
 }
 
+// Useful for async
+bool PRUMotionQueue::IsQueueEmpty() {
+  const unsigned int last_insert_index = (queue_pos_ - 1) % QUEUE_LEN;
+  return pru_data_->ring_buffer[last_insert_index].state != STATE_EMPTY;
+}
+
 void PRUMotionQueue::WaitQueueEmpty() {
   const unsigned int last_insert_index = (queue_pos_ - 1) % QUEUE_LEN;
   while (pru_data_->ring_buffer[last_insert_index].state != STATE_EMPTY) {
     pru_interface_->WaitEvent();
   }
+}
+
+void PRUMotionQueue::SetSpeedFactor(const float factor) {
+  // store factor * (1 << 16) in the pru
+  Log_debug("Factor: %f", factor);
+}
+
+static void clear_std_queue(std::queue<struct MotionSegment> &q) {
+   std::queue<struct MotionSegment> empty;
+   std::swap(q, empty);
+}
+
+void PRUMotionQueue::Reset() {
+  for (int i = 0; i < QUEUE_LEN; ++i) {
+    pru_data_->ring_buffer[i].state = STATE_EMPTY;
+  }
+  queue_pos_ = 0;
+  // Clean the overflow queue
+  clear_std_queue(overflow_queue_);
+  if (overflow_) fmux_->Pop(pru_interface_->EventFd());
+  overflow_ = false;
+  pru_interface_->ResetPru();
 }
 
 void PRUMotionQueue::MotorEnable(bool on) {

@@ -37,11 +37,13 @@
 #include <strings.h>
 #include <sys/select.h>
 #include <sys/types.h>
+#include <sys/timerfd.h>
 #include <unistd.h>
 
 #include "logging.h"
 #include "string-util.h"
 #include "simple-lexer.h"
+#include "linebuf-reader.h"
 
 const AxisBitmap_t kAllAxesBitmap =
   ((1 << AXIS_X) | (1 << AXIS_Y) | (1 << AXIS_Z)| (1 << AXIS_E)
@@ -91,6 +93,11 @@ public:
        GCodeParser::EventReceiver *parse_events, bool allow_m111);
   ~Impl();
 
+  void EnableAsyncStream();
+  void DisableAsyncStream(const bool flush);
+  void UpdateMachinePosition(const AxesRegister &new_pos);
+  void StartAsyncStream(GCodeParser *owner, int connection,
+                        FDMultiplexer *event_server, FILE *err_stream);
   void ParseLine(GCodeParser *owner, const char *line, FILE *err_stream);
   int ParseStream(GCodeParser *owner, int input_fd, FILE *err_stream);
   const char *gcodep_parse_pair_with_linenumber(int line_num,
@@ -99,7 +106,7 @@ public:
                                                 float *value,
                                                 FILE *err_stream);
   int error_count() const { return error_count_; }
-
+  bool IsRunning();
 private:
   enum DebugLevel {
     DEBUG_NONE        = 0,
@@ -341,8 +348,6 @@ private:
   AxesRegister last_spline_cp2_;
   bool have_first_spline_;
 
-  GCodeParser *while_owner_;
-  FILE *while_err_stream_;
   bool do_while_;
   std::string while_condition_;
   std::string while_loop_;
@@ -353,6 +358,21 @@ private:
   // TODO(hzeller): right now, we hook the error count to the gprintf(), but
   // maybe this needs to be more explicit.
   int error_count_;
+
+  bool AsyncStreamReader();
+  bool CloseAsyncConnection();
+
+  // ASYNC
+  int already_running_;
+  int connection_;
+  bool async_stream_is_disabled_;
+  FILE * err_stream_;
+  GCodeParser *owner_;
+  LinebufReader reader_;
+  FDMultiplexer *event_server_;
+
+  // Timer used to decide if the input is idle or not
+  int timer_;
 };
 
 AxesRegister GCodeParser::Impl::kZeroOffset;
@@ -375,8 +395,11 @@ GCodeParser::Impl::Impl(const GCodeParser::Config &parse_config,
     home_position_(config.machine_origin),
     current_origin_(&home_position_), current_global_offset_(&kZeroOffset),
     arc_normal_(AXIS_Z),
-    while_err_stream_(NULL), do_while_(false),
-    debug_level_(DEBUG_NONE), allow_m111_(allow_m111), error_count_(0)
+    do_while_(false), debug_level_(DEBUG_NONE),
+    allow_m111_(allow_m111), error_count_(0),
+    already_running_(false), connection_(-1), async_stream_is_disabled_(true),
+    err_stream_(NULL), owner_(NULL),
+    reader_()
 {
   assert(callbacks);  // otherwise, this is not very useful.
   reset_G92();
@@ -1089,8 +1112,8 @@ void GCodeParser::Impl::gcodep_while_end() {
       if (control_parse_.ExpectNext(&line, CK_DO)) {
         std::vector<StringPiece> piece = SplitString(while_loop_, "\n");
         for (size_t i=0; i < piece.size(); i++)
-          ParseLine(while_owner_, piece[i].ToString().c_str(),
-                    while_err_stream_);
+          ParseLine(owner_, piece[i].ToString().c_str(),
+                    err_stream_);
       } else {
         gprintf(GLOG_SYNTAX_ERR, "expected DO got '%s'\n", line);
         return;
@@ -1889,6 +1912,110 @@ static void disarm_signal_handler() {
   signal(SIGFPE, SIG_DFL);
 }
 
+bool GCodeParser::Impl::IsRunning() {
+  return already_running_;
+}
+
+// TODO: handle_arc may push a lot of small segments
+// never giving back the control to the select
+bool GCodeParser::Impl::AsyncStreamReader() {
+
+  if (reader_.Update(connection_) == 0) {
+    // Closing the connection
+    callbacks->gcode_finished(true);
+    return CloseAsyncConnection();
+  }
+
+  const char *line = reader_.ReadLine();
+  if (line == NULL) {
+    // Not enough chars, let's loop again
+    return true;
+  }
+  ParseLine(owner_, line, err_stream_);
+
+  // Start a new timer, if we don't receive gcode whithin a bunch of ms
+  // declare input idle
+  struct itimerspec timeout = {0};
+  timeout.it_value.tv_nsec = 1e7;
+  if (timerfd_settime(timer_, 0, &timeout, NULL) == -1)
+    Log_error("timerfd_settime");
+  return true;
+}
+
+bool GCodeParser::Impl::CloseAsyncConnection() {
+  disarm_signal_handler();
+  if (err_stream_) {
+    fflush(err_stream_);
+  }
+
+  // always call gcode_finished() to disable motors at end of stream
+  callbacks->gcode_finished(true);
+  close(connection_);
+  close(timer_);
+  Log_info("Connection to closed.\n");
+  already_running_ = false;
+  return false;
+}
+
+void GCodeParser::Impl::StartAsyncStream(GCodeParser *owner,
+                                         int connection,
+                                         FDMultiplexer *event_server,
+                                         FILE *err_stream) {
+  assert(!already_running_);
+  already_running_ = true;
+  owner_ = owner;
+  err_stream_ = err_stream;
+  connection_ = connection;
+  event_server_ = event_server;
+
+  if (err_stream) {
+    // Output needs to be unbuffered, otherwise they'll never make it.
+    setvbuf(err_stream, NULL, _IONBF, 0);
+  }
+  EnableAsyncStream();
+}
+
+void GCodeParser::Impl::EnableAsyncStream() {
+  if (!async_stream_is_disabled_) return; // Already running
+  // TODO: remember to return 2 to machine-control
+  // or send the proper message in case SIGINT or SIGKILL is pressed.
+  arm_signal_handler();
+  timer_ = timerfd_create(CLOCK_REALTIME, 0);
+  if (timer_ == -1) Log_error("timerfd_create");
+  event_server_->RunOnReadable(timer_, [this](){
+    read(timer_, NULL, sizeof(uint64_t));
+    callbacks->input_idle(true);
+    return true;
+  });
+
+  event_server_->RunOnReadable(connection_, [this](){
+    return AsyncStreamReader();
+  });
+  async_stream_is_disabled_ = false;
+}
+
+static void flush_fd(int fd) {
+  int ret;
+  while(ret != 0) {
+    ret = read(fd, NULL, 2048);
+  }
+}
+
+void GCodeParser::Impl::DisableAsyncStream(const bool flush) {
+  if (async_stream_is_disabled_) return;
+  event_server_->Pop(timer_);
+  event_server_->Pop(connection_);
+  if (flush) {
+    flush_fd(connection_);
+    reader_.Flush();
+  }
+  async_stream_is_disabled_ = true;
+}
+
+void GCodeParser::Impl::UpdateMachinePosition(const AxesRegister &new_pos) {
+  axes_pos_ = new_pos;
+}
+
 // Public facade function.
 int GCodeParser::Impl::ParseStream(GCodeParser *owner,
                                    int input_fd, FILE *err_stream) {
@@ -1911,8 +2038,8 @@ int GCodeParser::Impl::ParseStream(GCodeParser *owner,
   wait_time.tv_usec = 50 * 1000;
   FD_ZERO(&read_fds);
 
-  while_owner_ = owner;
-  while_err_stream_ = err_stream;
+  owner_ = owner;
+  err_stream_ = err_stream;
 
   arm_signal_handler();
   char buffer[8192];
@@ -1978,4 +2105,24 @@ const char *GCodeParser::ParsePair(const char *line,
                                    FILE *err_stream) {
   return impl_->gcodep_parse_pair_with_linenumber(-1, line, letter, value,
                                                   err_stream);
+}
+
+bool GCodeParser::already_running() {
+  return impl_->IsRunning();
+}
+void GCodeParser::StartAsyncStream(int connection, FDMultiplexer *event_server,
+                                   FILE *err_stream) {
+  return impl_->StartAsyncStream(this, connection, event_server, err_stream);
+}
+
+void GCodeParser::EnableAsyncStream() {
+  return impl_->EnableAsyncStream();
+}
+
+void GCodeParser::DisableAsyncStream(const bool flush) {
+  return impl_->DisableAsyncStream(flush);
+}
+
+void GCodeParser::UpdateMachinePosition(const AxesRegister &new_pos) {
+  return impl_->UpdateMachinePosition(new_pos);
 }

@@ -14,6 +14,10 @@ bool FDMultiplexer::IsRegisteredReadable(int fd) const {
     return handlers_.find(fd) != handlers_.end();
 }
 
+bool FDMultiplexer::Pop(int fd) {
+  return handlers_.erase(fd);
+}
+
 void FDMultiplexer::Loop() {
     fd_set read_fds;
     for (;;) {

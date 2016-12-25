@@ -97,6 +97,9 @@ public:
   // Might change values in MotionSegment.
   virtual void Enqueue(MotionSegment *segment) = 0;
 
+  // Return true if the queue is empty
+  virtual bool IsQueueEmpty() = 0;
+
   // Block and wait for queue to be empty.
   virtual void WaitQueueEmpty() = 0;
 
@@ -109,6 +112,13 @@ public:
   // Fill the argument with the current absolute position in loops
   // for each motor.
   virtual void GetMotorsLoops(MotorsRegister *absolute_pos_loops) = 0;
+
+  // Set the speed factor, > 1 faster, == 1 normal speed, == 0 stop.
+  virtual void SetSpeedFactor(const float factor) = 0;
+
+  virtual void Reset() = 0;
+
+  virtual int EventFd() = 0;
 };
 
 // Standard implementation.
@@ -126,10 +136,14 @@ public:
   ~PRUMotionQueue();
 
   void Enqueue(MotionSegment *segment);
+  bool IsQueueEmpty();
   void WaitQueueEmpty();
   void MotorEnable(bool on);
   void Shutdown(bool flush_queue);
   void GetMotorsLoops(MotorsRegister *absolute_pos_loops);
+  void SetSpeedFactor(const float factor);
+  void Reset();
+  int EventFd() { return pru_interface_->EventFd(); }
 
 private:
   bool Init();
@@ -159,10 +173,14 @@ private:
 class DummyMotionQueue : public MotionQueue {
 public:
   void Enqueue(MotionSegment *segment) {}
+  bool IsQueueEmpty() { return true; }
   void WaitQueueEmpty() {}
   void MotorEnable(bool on) {}
   void Shutdown(bool flush_queue) {}
   void GetMotorsLoops(MotorsRegister *absolute_pos_loops) {}
+  void SetSpeedFactor(const float factor) {}
+  void Reset() {}
+  int EventFd() { return -1; }
 };
 
 #endif  // _BEAGLEG_MOTION_QUEUE_H_

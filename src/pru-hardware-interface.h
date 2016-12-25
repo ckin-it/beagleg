@@ -45,6 +45,9 @@ public:
 
   // Halt the PRU
   virtual bool Shutdown() = 0;
+
+  // Reset back the PRU
+  virtual void ResetPru() = 0;
 };
 
 class UioPrussInterface : public PruHardwareInterface {
@@ -55,6 +58,7 @@ public:
   bool StartExecution();
   unsigned WaitEvent();
   bool Shutdown();
+  void ResetPru();
 };
 
 #endif  // BEAGLEG_PRU_HARDWARE_INTERFACE_

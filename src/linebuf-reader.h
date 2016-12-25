@@ -46,14 +46,14 @@ public:
   // been waiting.
   // If you made sure that there is data available before calling Update(),
   // this will not block.
-  void Update(ReadFun read_fun);
+  int Update(ReadFun read_fun);
 
   // The tpical way this will be called: with a file descriptor that has some
   // bytes ready.
-  void Update(int fd) {
-    Update([fd](char *buf, size_t len) {
-        return read(fd, buf, len);
-      });
+  int Update(int fd) {
+    return Update([fd](char *buf, size_t len) {
+            return read(fd, buf, len);
+           });
   }
 
   // Return a current line if it is available. The line is a nul terminated
@@ -65,6 +65,12 @@ public:
 
   // TODO(hzeller): maybe a function to get the remaining buffer when we
   // are closing the connection ? There might be some incomplete line in there.
+  const char* IncompleteLine();
+
+  void Flush() {
+    content_start_ = buffer_start_;
+    content_end_ = buffer_start_;
+  }
 
   // Currently stored in buffer.
   size_t size() const { return content_end_ - content_start_; }

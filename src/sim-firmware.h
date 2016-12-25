@@ -27,10 +27,15 @@ public:
   virtual ~SimFirmwareQueue();
 
   virtual void Enqueue(MotionSegment *segment);
+  virtual bool IsQueueEmpty() { return true; }
   virtual void WaitQueueEmpty() {}
   virtual void MotorEnable(bool on) {}
   virtual void Shutdown(bool flush_queue) {}
   virtual void GetMotorsLoops(MotorsRegister *absolute_pos_loops) {}
+  // Set the speed factor, > 1 faster, == 1 normal speed, == 0 stop.
+  virtual void SetSpeedFactor(const float factor) {}
+  virtual void Reset() {};
+  virtual int EventFd() { return -1; };
 
 private:
   class Averager;

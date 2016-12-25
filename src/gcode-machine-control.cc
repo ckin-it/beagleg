@@ -45,6 +45,8 @@
 #include "string-util.h"
 #include "planner.h"
 #include "adc.h"
+#include "fd-mux.h"
+#include "fd-timer.h"
 
 // In case we get a zero feedrate, send this frequency to motors instead.
 #define ZERO_FEEDRATE_OVERRIDE_HZ 5
@@ -70,11 +72,17 @@ public:
        MotorOperations *motor_ops,
        HardwareMapping *hardware_mapping,
        Spindle *spindle,
+       FDMultiplexer *event_server,
        FILE *msg_stream);
 
   // Initialize. Only if this succeeds, we have a properly initialized
   // object.
   bool Init();
+
+  void GetRealtimePosition(AxesRegister *pos);
+  void HandleStop();
+  void HandlePause();
+  void HandleResume();
 
   ~Impl() {
     delete planner_;
@@ -132,6 +140,7 @@ private:
   Planner *planner_;
   HardwareMapping *const hardware_mapping_;
   Spindle *const spindle_;
+  FDMultiplexer *event_server_;
   FILE *msg_stream_;
   GCodeParser *parser_;
 
@@ -155,11 +164,13 @@ GCodeMachineControl::Impl::Impl(const MachineControlConfig &config,
                                 MotorOperations *motor_ops,
                                 HardwareMapping *hardware_mapping,
                                 Spindle *spindle,
+                                FDMultiplexer *event_server,
                                 FILE *msg_stream)
   : cfg_(config),
     motor_ops_(motor_ops),
     hardware_mapping_(hardware_mapping),
     spindle_(spindle),
+    event_server_(event_server),
     msg_stream_(msg_stream),
     parser_(NULL),
     g0_feedrate_mm_per_sec_(-1),
@@ -281,7 +292,7 @@ bool GCodeMachineControl::Impl::Init() {
   if (error_count)
     return false;
 
-  planner_ = new Planner(&cfg_, hardware_mapping_, motor_ops_);
+  planner_ = new Planner(&cfg_, hardware_mapping_, motor_ops_, event_server_);
   return true;
 }
 
@@ -539,6 +550,15 @@ void GCodeMachineControl::Impl::get_endstop_status() {
 
 void GCodeMachineControl::Impl::gcode_start(GCodeParser *parser) {
   parser_ = parser;
+  planner_->SetInputControls(
+    [this]() {
+      parser_->EnableAsyncStream();
+    },
+    [this]() {
+      parser_->DisableAsyncStream(false);
+    }
+  );
+
   if (cfg_.auto_fan_pwm > 0)
     set_fanspeed(cfg_.auto_fan_pwm);
 }
@@ -642,13 +662,19 @@ bool GCodeMachineControl::Impl::rapid_move(float feed,
 
 void GCodeMachineControl::Impl::dwell(float value) {
   planner_->BringPathToHalt();
-  motor_ops_->WaitQueueEmpty();
-  usleep((int) (value * 1000));
+  parser_->DisableAsyncStream(false);
 
-  if (pause_enabled_ && check_for_pause()) {
-    Log_debug("Pause input detected, waiting for Start");
-    wait_for_start();
-  }
+  // Run when the queue is empty
+  motor_ops_->OnEmptyQueue(event_server_, [this, value](){
+    // Create a timer
+    FDTimer(value, event_server_, [this](){
+      if (pause_enabled_ && check_for_pause()) {
+        Log_debug("Pause input detected, waiting for Start");
+        wait_for_start();
+      }
+      parser_->EnableAsyncStream();
+    });
+  });
 }
 
 void GCodeMachineControl::Impl::input_idle(bool is_first) {
@@ -794,6 +820,48 @@ bool GCodeMachineControl::Impl::probe_axis(float feedrate,
   return true;
 }
 
+void GCodeMachineControl::Impl::GetRealtimePosition(AxesRegister *pos) {
+  int motors_steps[HardwareMapping::NUM_MOTORS];
+  int axes_steps[GCODE_NUM_AXES];
+  motor_ops_->GetRealtimePosition(motors_steps);
+  hardware_mapping_-> \
+    AssignMotorsStepsToAxis(axes_steps, motors_steps);
+  for (const GCodeParserAxis axis : AllAxes()) {
+    (*pos)[axis] = axes_steps[axis] / cfg_.steps_per_mm[axis];
+  }
+}
+
+void GCodeMachineControl::Impl::HandleStop() {
+  // Disable new parsing (true stays for flush or not)
+  // We will reset the queue asyncronously, let's block the comunication
+  // and discard everything already enqueued.
+  parser_->DisableAsyncStream(true);
+
+  // Schedule Stop
+  motor_ops_->RunAsyncStop(event_server_);
+
+  planner_->ExternalSetPathIsHalted();
+  AxesRegister machine_pos;
+  GetRealtimePosition(&machine_pos);
+  for (const GCodeParserAxis axis : AllAxes()) {
+    planner_->SetExternalPosition(axis, machine_pos[axis]);
+  }
+  // Update the parser as well
+  parser_->UpdateMachinePosition(machine_pos);
+}
+
+void GCodeMachineControl::Impl::HandlePause() {
+  // Schedule Pause
+  motor_ops_->RunAsyncPause(event_server_);
+
+}
+
+void GCodeMachineControl::Impl::HandleResume() {
+  // Schedule Resume
+  motor_ops_->RunAsyncResume(event_server_);
+
+}
+
 GCodeMachineControl::GCodeMachineControl(Impl *impl) : impl_(impl) {
 }
 GCodeMachineControl::~GCodeMachineControl() {
@@ -805,10 +873,12 @@ GCodeMachineControl* GCodeMachineControl::Create(
   MotorOperations *motor_ops,
   HardwareMapping *hardware_mapping,
   Spindle *spindle,
+  FDMultiplexer *event_server,
   FILE *msg_stream)
 {
   Impl *result = new Impl(config, motor_ops,
-                          hardware_mapping, spindle, msg_stream);
+                          hardware_mapping, spindle,
+                          event_server,  msg_stream);
   if (!result->Init()) {
     delete result;
     return NULL;
@@ -831,4 +901,31 @@ GCodeParser::EventReceiver *GCodeMachineControl::ParseEventReceiver() {
 
 void GCodeMachineControl::SetMsgOut(FILE *msg_stream) {
   impl_->set_msg_stream(msg_stream);
+}
+
+// TODO: This should be made thread safe
+void GCodeMachineControl::GetCurrentPos(AxesRegister *current_pos) {
+  impl_->GetRealtimePosition(current_pos);
+}
+
+// TODO: This should be made thread safe
+void GCodeMachineControl::Stop() {
+  impl_->HandleStop();
+  // If we are not already in a pause state -> pause
+  // ask motor operations to unsafe_reset() the pru queue and clear the host
+  // queue
+  // Update the current position
+  // Accept new gcode commands
+}
+
+// TODO: This should be made thread safe
+void GCodeMachineControl::Pause() {
+  impl_->HandlePause();
+  // Ask motor operations to pause
+}
+
+// TODO: This should be made thread safe
+void GCodeMachineControl::Resume() {
+  impl_->HandleResume();
+  // Ask motor operations to resume
 }

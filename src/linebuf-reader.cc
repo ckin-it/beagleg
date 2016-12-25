@@ -27,7 +27,7 @@ LinebufReader::LinebufReader(size_t buf_size)
 }
 LinebufReader::~LinebufReader() { delete [] buffer_start_; }
 
-void LinebufReader::Update(ReadFun read_fun) {
+int LinebufReader::Update(ReadFun read_fun) {
   if (content_start_ - buffer_start_ > (int)(len_ / 2)) {
     const size_t copy_len = size();
     memmove(buffer_start_, content_start_, copy_len);
@@ -39,6 +39,13 @@ void LinebufReader::Update(ReadFun read_fun) {
   // and potentially regard the buffer as 'complete' even if it doesn't have a
   // full line yet.
   if (r >= 0) content_end_ += r;   // so, what if r < 0 ?
+  return r;
+}
+
+const char* LinebufReader::IncompleteLine() {
+  *content_end_ = '\n';
+  content_end_++;
+  return ReadLine();
 }
 
 const char* LinebufReader::ReadLine() {

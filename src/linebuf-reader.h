@@ -63,6 +63,8 @@ public:
   // you reach NULL to empty the buffer before the next Update() comes in.
   const char* ReadLine();
 
+  const bool HasMoreLines();
+
   // TODO(hzeller): maybe a function to get the remaining buffer when we
   // are closing the connection ? There might be some incomplete line in there.
   const char* IncompleteLine();

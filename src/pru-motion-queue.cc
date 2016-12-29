@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include <strings.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #include "generic-gpio.h"
 #include "fd-mux.h"
@@ -150,10 +151,10 @@ void PRUMotionQueue::EnqueueInPru(MotionSegment *element) {
   // to avoid a race condition while copying.
   element->state = STATE_EMPTY;
 
-  queue_pos_ %= QUEUE_LEN;
-
   volatile MotionSegment *queue_element = &pru_data_->ring_buffer[queue_pos_++];
   unaligned_memcpy(queue_element, element, sizeof(*queue_element));
+
+  queue_pos_ %= QUEUE_LEN;
 
   // Fully initialized. Tell busy-waiting PRU by flipping the state.
   queue_element->state = state_to_send;
@@ -190,6 +191,7 @@ void PRUMotionQueue::Enqueue(MotionSegment *element) {
 }
 
 void PRUMotionQueue::OnEmptyQueue(const std::function<void()> &callback) {
+  if (IsQueueEmpty()) { return callback(); }
   on_empty_queue_.push_back(callback);
   WakeUpEventHandler();
 }
@@ -203,12 +205,15 @@ void PRUMotionQueue::WakeUpEventHandler() {
 }
 
 bool PRUMotionQueue::EventHandler() {
-  if (on_empty_queue_.size() != 0 && IsQueueEmpty()){
+  int i;
+  read(pru_interface_->EventFd(), &i, 4);
+  pru_interface_->ClearEvent();
+  if (overflow_) Shovel();
+  if (on_empty_queue_.size() > 0 && IsQueueEmpty()){
     for (const auto &callback : on_empty_queue_) { callback();
       on_empty_queue_.clear();
     }
   }
-  if (overflow_) Shovel();
   if (!overflow_ && on_empty_queue_.size() == 0) { // Sleep
     handler_is_running_ = false;
     return false;

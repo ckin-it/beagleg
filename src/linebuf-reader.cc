@@ -48,13 +48,19 @@ const char* LinebufReader::IncompleteLine() {
   return ReadLine();
 }
 
+const bool LinebufReader::HasMoreLines() {
+  for (char *i = content_start_; i < content_end_; ++i) {
+    if (*i == '\n' || *i == '\r') return true;
+  }
+  return false;
+}
+
 const char* LinebufReader::ReadLine() {
   for (char *i = content_start_; i < content_end_; ++i) {
     if (*i == '\n' || *i == '\r') {
       *i = '\0';
       const char *line = content_start_;
       content_start_ = i + 1;
-      Log_debug("What I've got %s", line);
       return line;
     }
   }

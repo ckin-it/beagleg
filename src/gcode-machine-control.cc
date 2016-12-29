@@ -665,9 +665,12 @@ void GCodeMachineControl::Impl::dwell(float value) {
   parser_->DisableAsyncStream(false);
 
   // Run when the queue is empty
-  motor_ops_->OnEmptyQueue(event_server_, [this, value](){
+  motor_ops_->RunOnEmptyQueue([this, value]() {
     // Create a timer
-    FDTimer(value, event_server_, [this](){
+    new FDTimer(value, event_server_, [this]() {
+      // TODO:(lromor) This it will block the whole loop
+      // not a big deal since we have the queue empty at this point. But
+      // we will not be able to stream anymore or receive commands.
       if (pause_enabled_ && check_for_pause()) {
         Log_debug("Pause input detected, waiting for Start");
         wait_for_start();
@@ -903,12 +906,10 @@ void GCodeMachineControl::SetMsgOut(FILE *msg_stream) {
   impl_->set_msg_stream(msg_stream);
 }
 
-// TODO: This should be made thread safe
 void GCodeMachineControl::GetCurrentPos(AxesRegister *current_pos) {
   impl_->GetRealtimePosition(current_pos);
 }
 
-// TODO: This should be made thread safe
 void GCodeMachineControl::Stop() {
   impl_->HandleStop();
   // If we are not already in a pause state -> pause
@@ -918,13 +919,11 @@ void GCodeMachineControl::Stop() {
   // Accept new gcode commands
 }
 
-// TODO: This should be made thread safe
 void GCodeMachineControl::Pause() {
   impl_->HandlePause();
   // Ask motor operations to pause
 }
 
-// TODO: This should be made thread safe
 void GCodeMachineControl::Resume() {
   impl_->HandleResume();
   // Ask motor operations to resume

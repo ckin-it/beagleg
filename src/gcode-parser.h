@@ -216,7 +216,6 @@ public:
   void EnableAsyncStream();
   void DisableAsyncStream(const bool flush);
 
-  // TODO(leonardo)
   // Used from the stop to update the current machine position
   // in order to handle new gcode.
   void UpdateMachinePosition(const AxesRegister &new_pos);

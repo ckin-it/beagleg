@@ -70,8 +70,7 @@ public:
   virtual void RunAsyncResume(FDMultiplexer *event_server) {}
 
   typedef std::function<void()> Callback;
-  virtual void OnEmptyQueue(FDMultiplexer *event_server,
-                            const Callback &handler) {}
+  virtual void RunOnEmptyQueue(const Callback &callback) {}
 };
 
 typedef enum state {
@@ -96,8 +95,7 @@ public:
   virtual void RunAsyncPause(FDMultiplexer *event_server);
   virtual void RunAsyncResume(FDMultiplexer *event_server);
 
-  virtual void OnEmptyQueue(FDMultiplexer *event_server,
-                            const Callback &handler);
+  virtual void RunOnEmptyQueue(const Callback &handler);
 
 private:
   void execute_callback_if_queue_empty();

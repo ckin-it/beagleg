@@ -337,13 +337,6 @@ void MotionQueueMotorOperations::GetRealtimePosition(int pos_steps[BEAGLEG_NUM_M
   }
 }
 
-void MotionQueueMotorOperations::OnEmptyQueue(FDMultiplexer *event_server,
-                                              const Callback &callback) {
-  event_server->RunOnReadable(backend_->EventFd(), [this, callback]() {
-    if (backend_->IsQueueEmpty()) {
-      callback();
-      return false;
-    }
-    return true;  // Keep accepting connections.
-  });
+void MotionQueueMotorOperations::RunOnEmptyQueue(const Callback &callback) {
+  backend_->OnEmptyQueue(callback);
 }

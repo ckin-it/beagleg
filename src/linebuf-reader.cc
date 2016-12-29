@@ -17,7 +17,7 @@
  * along with BeagleG.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include "linebuf-reader.h"
-
+#include "logging.h"
 #include "string-util.h"
 
 LinebufReader::LinebufReader(size_t buf_size)
@@ -54,6 +54,7 @@ const char* LinebufReader::ReadLine() {
       *i = '\0';
       const char *line = content_start_;
       content_start_ = i + 1;
+      Log_debug("What I've got %s", line);
       return line;
     }
   }

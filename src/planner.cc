@@ -485,8 +485,7 @@ void Planner::Impl::move_machine_steps(const struct AxisTarget *last_pos,
   if (cfg_->synchronous) {
     disable_input_();
     // Run when the queue is empty
-    motor_ops_->OnEmptyQueue(event_server_,
-        [this, has_accel, has_move, has_decel,
+    motor_ops_->RunOnEmptyQueue([this, has_accel, has_move, has_decel,
         accel_command, move_command, decel_command, target_pos](){
       if (has_accel) motor_ops_->Enqueue(accel_command);
       if (has_move) motor_ops_->Enqueue(move_command);
@@ -495,6 +494,12 @@ void Planner::Impl::move_machine_steps(const struct AxisTarget *last_pos,
       last_aux_bits_ = target_pos->aux_bits;
       enable_input_();
     });
+  } else {
+    if (has_accel) motor_ops_->Enqueue(accel_command);
+    if (has_move) motor_ops_->Enqueue(move_command);
+    if (has_decel) motor_ops_->Enqueue(decel_command);
+
+    last_aux_bits_ = target_pos->aux_bits;
   }
 }
 

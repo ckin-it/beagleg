@@ -39,7 +39,7 @@ GTEST_INCLUDE=-I$(GTEST_SOURCE)/include -I$(GMOCK_SOURCE)/include
 # Optmization flags. Typically, that should be -O3 for regluar use, but for
 # debugging and development "-g -O0" can be more helpful. Overridable by
 # environment variable.
-BEAGLEG_OPT_CFLAGS?=-O3
+BEAGLEG_OPT_CFLAGS?=-g -O0 -DDEBUG_QUEUE
 
 CFLAGS+=-Wall -I$(INCDIR_APP_LOADER) -I$(CAPE_INCLUDE) -D_XOPEN_SOURCE=500 $(ARM_COMPILE_FLAGS) $(BEAGLEG_OPT_CFLAGS) -DCAPE_NAME='"$(BEAGLEG_HARDWARE_TARGET)"'
 

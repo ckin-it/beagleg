@@ -97,8 +97,8 @@ public:
   // Might change values in MotionSegment.
   virtual void Enqueue(MotionSegment *segment) = 0;
 
-  // Return true if the queue is empty
-  virtual bool IsQueueEmpty() = 0;
+  // Register a Callback to be called when the queue is empty
+  virtual void OnEmptyQueue(const std::function<void()> &callback) = 0;
 
   // Block and wait for queue to be empty.
   virtual void WaitQueueEmpty() = 0;
@@ -116,9 +116,8 @@ public:
   // Set the speed factor, > 1 faster, == 1 normal speed, == 0 stop.
   virtual void SetSpeedFactor(const float factor) = 0;
 
+  // Clear the queues, restart
   virtual void Reset() = 0;
-
-  virtual int EventFd() = 0;
 };
 
 // Standard implementation.
@@ -135,15 +134,14 @@ public:
                  FDMultiplexer *fmux);
   ~PRUMotionQueue();
 
+  void OnEmptyQueue(const std::function<void()> &callback);
   void Enqueue(MotionSegment *segment);
-  bool IsQueueEmpty();
   void WaitQueueEmpty();
   void MotorEnable(bool on);
   void Shutdown(bool flush_queue);
   void GetMotorsLoops(MotorsRegister *absolute_pos_loops);
   void SetSpeedFactor(const float factor);
   void Reset();
-  int EventFd() { return pru_interface_->EventFd(); }
 
 private:
   bool Init();
@@ -159,13 +157,17 @@ private:
 
   struct HistorySegment *const shadow_queue_;
 
-  // Overflow queue stuff
   FDMultiplexer *const fmux_;
   void EnqueueInPru(MotionSegment *element);
-  void EnableShovel();
-  bool Shovel();
+  void WakeUpEventHandler();
+  bool EventHandler();
+  void Shovel();
   bool overflow_;
+  bool handler_is_running_;
   std::queue<struct MotionSegment> overflow_queue_;
+
+  bool IsQueueEmpty();
+  std::vector<std::function<void()>> on_empty_queue_;
 };
 
 
@@ -173,14 +175,13 @@ private:
 class DummyMotionQueue : public MotionQueue {
 public:
   void Enqueue(MotionSegment *segment) {}
-  bool IsQueueEmpty() { return true; }
+  void OnEmptyQueue(const std::function<void()> &callback) {}
   void WaitQueueEmpty() {}
   void MotorEnable(bool on) {}
   void Shutdown(bool flush_queue) {}
   void GetMotorsLoops(MotorsRegister *absolute_pos_loops) {}
   void SetSpeedFactor(const float factor) {}
   void Reset() {}
-  int EventFd() { return -1; }
 };
 
 #endif  // _BEAGLEG_MOTION_QUEUE_H_

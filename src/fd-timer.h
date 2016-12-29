@@ -3,7 +3,6 @@
 #ifndef FD_TIMER_H_
 #define FD_TIMER_H_
 
-#include <map>
 #include <functional>
 #include <sys/timerfd.h>
 
@@ -16,11 +15,12 @@ public:
     FDTimer(float t, FDMultiplexer *fmux, const Callback &callback)
             : callback_(callback) {
     timer_ = timerfd_create(CLOCK_REALTIME, 0);
-    if (timer_ == -1) Log_error("timerfd_create");
+    if (timer_ < 0) Log_error("timerfd_create");
 
+    Log_debug("Created TIMER with fd: %d", timer_);
     struct itimerspec timeout = {0};
     float i, f;
-    f = modff(t, &i);
+    f = modff(t / 1e3, &i);
     timeout.it_value.tv_sec = (int) i;
     timeout.it_value.tv_nsec = (long) (f * 1e9l);
 
@@ -31,16 +31,18 @@ public:
       return Consume();
     });
     }
+
     ~FDTimer() { close(timer_); }
 
 private:
     bool Consume() {
+      Log_debug("Callbacking");
       callback_();
       delete this;
       return false;
     }
     int timer_;
-    const Callback & callback_;
+    const Callback callback_;
 };
 
 #endif // FD_TIMER_H_

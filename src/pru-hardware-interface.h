@@ -34,6 +34,9 @@ public:
   // Returns the file descriptor associated with a pru interrupt
   virtual int EventFd() = 0;
 
+  // Reset the event
+  virtual int ClearEvent() = 0;
+
   // Retrieve the pointer of the pru mapping and initialize the memory.
   virtual bool AllocateSharedMem(void **pru_mmap, const size_t size) = 0;
 
@@ -54,6 +57,7 @@ class UioPrussInterface : public PruHardwareInterface {
 public:
   bool Init();
   bool AllocateSharedMem(void **pru_mmap, const size_t size);
+  int ClearEvent();
   int EventFd();
   bool StartExecution();
   unsigned WaitEvent();

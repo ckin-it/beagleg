@@ -1,28 +1,33 @@
 // -*- mode: c++; c-basic-offset: 4; indent-tabs-mode: nil; -*-
 
 #include "fd-mux.h"
+#include "logging.h"
 
 #include <vector>
-
+#include <algorithm>
 #include <sys/select.h>
+#include <errno.h>
+ #include <string.h>
 
 bool FDMultiplexer::RunOnReadable(int fd, const Handler &handler) {
-    return handlers_.insert({ fd, handler }).second;
+  return handlers_.insert({ fd, handler }).second;
 }
 
 bool FDMultiplexer::IsRegisteredReadable(int fd) const {
     return handlers_.find(fd) != handlers_.end();
 }
 
-bool FDMultiplexer::Pop(int fd) {
-  return handlers_.erase(fd);
+void FDMultiplexer::ScheduleDelete(int fd) {
+  to_delete_.push_back(fd);
 }
 
 void FDMultiplexer::Loop() {
     fd_set read_fds;
+
     for (;;) {
         int maxfd = -1;
         FD_ZERO(&read_fds);
+
         for (const auto &it : handlers_) {
             if (it.first >= maxfd) maxfd = it.first+1;
             FD_SET(it.first, &read_fds);
@@ -47,19 +52,20 @@ void FDMultiplexer::Loop() {
             continue;
         }
 
-        std::vector<int> to_delete;
         for (const auto &it : handlers_) {
             if (FD_ISSET(it.first, &read_fds)) {
                 const bool retrigger = it.second();
                 if (!retrigger) {
-                    to_delete.push_back(it.first);
+                    to_delete_.push_back(it.first);
                 }
                 if (--fds_ready == 0)
                     break;
             }
         }
-        for (int i : to_delete) {
+
+        for (int i : to_delete_) {
             handlers_.erase(i);
         }
+        to_delete_.clear();
     }
 }

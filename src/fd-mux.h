@@ -5,6 +5,7 @@
 
 #include <map>
 #include <functional>
+#include <vector>
 
 // This needs a better name.
 class FDMultiplexer {
@@ -18,7 +19,7 @@ public:
     // Returns false if that filedescriptor is already registered.
     bool RunOnReadable(int fd, const Handler &handler);
     bool IsRegisteredReadable(int fd) const;
-    bool Pop(int fd);
+    void ScheduleDelete(int fd);
 
     // Run the main loop. Blocks while there is still a filedescriptor
     // registered.
@@ -26,5 +27,6 @@ public:
 
 private:
     std::map<int, Handler> handlers_;
+    std::vector<int> to_delete_;
 };
 #endif // FD_MUX_H_

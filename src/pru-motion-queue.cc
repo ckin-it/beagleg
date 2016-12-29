@@ -160,28 +160,21 @@ void PRUMotionQueue::EnqueueInPru(MotionSegment *element) {
 
   // Register the last inserted motion segment in the shadow queue.
   RegisterHistorySegment(*element);
+  #ifdef DEBUG_QUEUE
+    DumpMotionSegment(queue_element, pru_data_);
+  #endif
 }
 
-void PRUMotionQueue::EnableShovel() {
-  // Register the callback in the muxer with the event fd
-  overflow_ = true;
-  fmux_->RunOnReadable(pru_interface_->EventFd(),
-                      [this](){ return Shovel(); });
-}
-
-bool PRUMotionQueue::Shovel() {
+void PRUMotionQueue::Shovel() {
   // We got the interrupt, let's push all the segments as much as we can
-  while (pru_data_->ring_buffer[queue_pos_].state == STATE_EMPTY) {
+  while (!overflow_queue_.empty() &&
+         pru_data_->ring_buffer[queue_pos_].state == STATE_EMPTY) {
     EnqueueInPru(&overflow_queue_.front());
     overflow_queue_.pop();
   }
-
   if (overflow_queue_.empty()) {
     overflow_ = false;
-    return false;
   }
-  // Disable
-  else return true;
 }
 
 void PRUMotionQueue::Enqueue(MotionSegment *element) {
@@ -189,25 +182,51 @@ void PRUMotionQueue::Enqueue(MotionSegment *element) {
   else if (pru_data_->ring_buffer[queue_pos_].state != STATE_EMPTY) {
     // Queue full, push it in the overflow queue, trigger the shovel.
     overflow_queue_.push(*element);
-    EnableShovel();
+    overflow_ = true;
+    WakeUpEventHandler();
   } else {
     EnqueueInPru(element);
   }
+}
 
-  #ifdef DEBUG_QUEUE
-    DumpMotionSegment(queue_element, pru_data_);
-  #endif
+void PRUMotionQueue::OnEmptyQueue(const std::function<void()> &callback) {
+  on_empty_queue_.push_back(callback);
+  WakeUpEventHandler();
+}
+
+void PRUMotionQueue::WakeUpEventHandler() {
+  if (handler_is_running_) return;
+  fmux_->RunOnReadable(pru_interface_->EventFd(), [this](){
+    return EventHandler();
+  });
+  handler_is_running_ = true;
+}
+
+bool PRUMotionQueue::EventHandler() {
+  if (on_empty_queue_.size() != 0 && IsQueueEmpty()){
+    for (const auto &callback : on_empty_queue_) { callback();
+      on_empty_queue_.clear();
+    }
+  }
+  if (overflow_) Shovel();
+  if (!overflow_ && on_empty_queue_.size() == 0) { // Sleep
+    handler_is_running_ = false;
+    return false;
+  }
+  return true;
 }
 
 // Useful for async
 bool PRUMotionQueue::IsQueueEmpty() {
+  if (overflow_) return false; // It must be full
   const unsigned int last_insert_index = (queue_pos_ - 1) % QUEUE_LEN;
-  return pru_data_->ring_buffer[last_insert_index].state != STATE_EMPTY;
+  return pru_data_->ring_buffer[last_insert_index].state == STATE_EMPTY;
 }
 
 void PRUMotionQueue::WaitQueueEmpty() {
   const unsigned int last_insert_index = (queue_pos_ - 1) % QUEUE_LEN;
-  while (pru_data_->ring_buffer[last_insert_index].state != STATE_EMPTY) {
+  while (overflow_ ||
+         pru_data_->ring_buffer[last_insert_index].state != STATE_EMPTY) {
     pru_interface_->WaitEvent();
   }
 }
@@ -229,8 +248,9 @@ void PRUMotionQueue::Reset() {
   queue_pos_ = 0;
   // Clean the overflow queue
   clear_std_queue(overflow_queue_);
-  if (overflow_) fmux_->Pop(pru_interface_->EventFd());
+  on_empty_queue_.clear();
   overflow_ = false;
+  fmux_->ScheduleDelete(pru_interface_->EventFd());
   pru_interface_->ResetPru();
 }
 
@@ -258,6 +278,7 @@ PRUMotionQueue::PRUMotionQueue(HardwareMapping *hw, PruHardwareInterface *pru,
                                  shadow_queue_(new HistorySegment[QUEUE_LEN]),
                                  fmux_(fmux),
                                  overflow_(false),
+                                 handler_is_running_(false),
                                  overflow_queue_() {
   const bool success = Init();
   // For now, we just assert-fail here, if things fail.

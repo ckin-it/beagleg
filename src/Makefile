@@ -89,6 +89,9 @@ test-html: test-out/test.html
 test-out/test.html: gcode2ps test-create-html.sh testdata/*.gcode
 	./test-create-html.sh testdata/*.gcode
 
+pause-client: pause-client.o $(PRUSS_LIBS)
+	$(CROSS_COMPILE)$(CXX) $(CFLAGS) -o $@ $^ $(PRUSS_LIBS) $(LDFLAGS)
+
 test: $(UNITTEST_BINARIES)
 	for test_bin in $(UNITTEST_BINARIES) ; do echo ; echo $$test_bin; ./$$test_bin || exit 1 ; done
 

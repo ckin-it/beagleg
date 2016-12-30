@@ -268,8 +268,8 @@ WAIT_RESUME:
 	MOV r4, TIME_FACTOR
 	;; Update the loop_skip fraction
 	LBCO &r4, CONST_PRUDRAM, r4, 4
-	;; If the skip frac is 0xffffffff, let's stop completely.
-	MOV r5, 0xffffffff
+	;; If the skip frac is 0x00000000, let's stop completely.
+	MOV r5, 0
 	QBEQ WAIT_RESUME, r4, r5
 
 RESET_COUNTER:

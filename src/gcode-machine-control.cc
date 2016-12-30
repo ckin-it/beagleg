@@ -913,11 +913,6 @@ void GCodeMachineControl::GetCurrentPos(AxesRegister *current_pos) {
 
 void GCodeMachineControl::Stop() {
   impl_->HandleStop();
-  // If we are not already in a pause state -> pause
-  // ask motor operations to unsafe_reset() the pru queue and clear the host
-  // queue
-  // Update the current position
-  // Accept new gcode commands
 }
 
 void GCodeMachineControl::Pause() {

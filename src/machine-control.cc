@@ -47,6 +47,7 @@
 #include "sim-firmware.h"
 #include "spindle-control.h"
 #include "string-util.h"
+#include "grpc-control-server.h"
 
 static int usage(const char *prog, const char *msg) {
   if (msg) {
@@ -499,6 +500,8 @@ int main(int argc, char *argv[]) {
                      bind_addr, listen_port);
   }
 
+  GrpcControlServer control_server(machine_control, &event_server);
+  control_server.Run();
   // Add the shovel, grpc, etc..
   // Instantiate the shovel and pass it to the motion-queue instance
   // the second queue is inside the motion-queue

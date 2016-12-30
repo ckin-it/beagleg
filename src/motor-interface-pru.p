@@ -30,7 +30,6 @@
 #define QUEUE_ELEMENT_SIZE (SIZE(QueueHeader) + SIZE(TravelParameters))
 #define QUEUE_OFFSET 4
 #define TIME_FACTOR (QUEUE_LEN * QUEUE_ELEMENT_SIZE + QUEUE_OFFSET)
-#define CURRENT_DELAY (TIME_FACTOR + 4)
 
 #define PARAM_START r7
 #define PARAM_END  r19
@@ -274,6 +273,9 @@ WAIT_RESUME:
 	QBEQ WAIT_RESUME, r4, r5
 
 RESET_COUNTER:
+  ;; Since we need r28 even for the status register,
+  ;; but also for the multiplication let's backup its content in r5
+  MOV r5, r28
 	MOV r6, r1
 
 STEP_DELAY:				; Create time delay between steps.
@@ -297,13 +299,18 @@ STEP_DELAY:				; Create time delay between steps.
 	MOV r6, r26;
 	LSR r6, r6, 16
 
-	QBEQ STEP_GEN, r6, 0       ; special value 0: all steps consumed.
+	QBEQ DELAY_END, r6, 0       ; special value 0: all steps consumed.
 	;; Wait
 FRAC_DELAY:
 	SUB r6, r6, 1                   ; two cycles per loop.
 	QBNE FRAC_DELAY, r6, 0
 
-	JMP STEP_GEN
+	JMP DELAY_END
+
+DELAY_END:
+  ;; Let's pick up the status register values back
+  MOV r28, r5
+  JMP STEP_GEN
 
 DONE_STEP_GEN:
 	;; We are done with instruction. Mark slot as empty...
@@ -313,6 +320,7 @@ DONE_STEP_GEN:
 
 	;; Next position in ring buffer
 	ADD r2, r2, QUEUE_ELEMENT_SIZE
+
 	ADD r28.b3, r28.b3, 1                  ; add + 1 to the MSB byte
 	MOV r1, QUEUE_LEN * QUEUE_ELEMENT_SIZE ; end-of-queue
 	QBLT QUEUE_READ, r1, r2

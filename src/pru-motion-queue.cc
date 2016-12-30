@@ -123,7 +123,7 @@ void PRUMotionQueue::GetMotorsLoops(MotorsRegister *absolute_pos_loops) {
   const uint64_t max_fraction = 0xFFFFFFFF;
   const struct QueueStatus status = *(struct QueueStatus*) &pru_data_->status;
   const struct HistorySegment &current = shadow_queue_[status.index];
-
+  Log_debug("%u", status.counter);
   const uint64_t counter = status.counter;
   for (int i = 0; i < MOTION_MOTOR_COUNT; ++i) {
     const int64_t sign = (current.direction_bits >> i) & 1 ? -1 : 1;

@@ -338,6 +338,7 @@ void MotionQueueMotorOperations::GetRealtimePosition(int pos_steps[BEAGLEG_NUM_M
   backend_->GetMotorsLoops(&steps);
   for (int i = 0; i < MOTION_MOTOR_COUNT; ++i) {
     pos_steps[i] = steps[i] / LOOPS_PER_STEP; // Convert into steps
+    //Log_debug("%d, %d", i, steps[i]);
   }
 }
 

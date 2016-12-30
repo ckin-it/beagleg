@@ -21,6 +21,7 @@
 #include <string>
 #include <unistd.h>
 #include <thread>
+#include <sys/timerfd.h>
 
 #include <grpc++/grpc++.h>
 #include "control-interface.grpc.pb.h"
@@ -104,9 +105,11 @@ private:
   FDMultiplexer *const event_server_;
 
   int pipe_fd_[2];
+  int timer_;
   std::thread *grpc_wait_;
   std::unique_ptr<Server> server_;
   bool HandleCommand();
+  bool PositionStreamer();
 };
 
 void GrpcControlServer::Impl::Run() {
@@ -134,13 +137,42 @@ void GrpcControlServer::Impl::Run() {
 
     server_->Wait();
   });
+
+  timer_ = timerfd_create(CLOCK_REALTIME, 0);
+  if (timer_ == -1) perror("timerfd_create");
+
+  struct itimerspec timeout = {0};
+  timeout.it_value.tv_nsec = 1e8;
+
+  if (timerfd_settime(timer_, 0, &timeout, NULL) == -1)
+    perror("timerfd_settime");
+
+  event_server_->RunOnReadable(timer_, [this](){
+    return PositionStreamer();
+  });
+}
+
+bool GrpcControlServer::Impl::PositionStreamer() {
+  AxesRegister axes_pos;
+  machine_->GetCurrentPos(&axes_pos);
+  // for (const GCodeParserAxis axis : AllAxes()) {
+  //   Log_debug("X: %f", axes_pos[axis]);
+  // }
+
+  struct itimerspec timeout = {0};
+  timeout.it_value.tv_nsec = 1e8;
+
+  if (timerfd_settime(timer_, 0, &timeout, NULL) == -1)
+    perror("timerfd_settime");
+
+  return true;
 }
 
 bool GrpcControlServer::Impl::HandleCommand() {
   Command command;
   if (read(pipe_fd_[0], &command, sizeof(command)) < 0)
     perror("HandleCommand pipe read()");
-  
+
   switch (command) {
     case STOP: machine_->Stop(); break;
     case PAUSE: machine_->Pause(); break;

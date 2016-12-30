@@ -238,8 +238,13 @@ void PRUMotionQueue::WaitQueueEmpty() {
 }
 
 void PRUMotionQueue::SetSpeedFactor(const float factor) {
+  assert(factor >= 0);
   // store factor * (1 << 16) in the pru
-  Log_debug("Factor: %f", factor);
+  if (factor == 0) {
+    pru_data_->time_factor = 0xffffffff; // Pause
+    return;
+  }
+  pru_data_->time_factor = (1 / factor) * (1 << 16);
 }
 
 static void clear_std_queue(std::queue<struct MotionSegment> &q) {
@@ -248,14 +253,17 @@ static void clear_std_queue(std::queue<struct MotionSegment> &q) {
 }
 
 void PRUMotionQueue::Reset() {
+  // Better assert that motors are off or that the speed factor is 0
   for (int i = 0; i < QUEUE_LEN; ++i) {
     pru_data_->ring_buffer[i].state = STATE_EMPTY;
   }
+  SetSpeedFactor(1);
   queue_pos_ = 0;
   // Clean the overflow queue
   clear_std_queue(overflow_queue_);
   on_empty_queue_.clear();
   overflow_ = false;
+  handler_is_running_ = false;
   fmux_->ScheduleDelete(pru_interface_->EventFd());
   pru_interface_->ResetPru();
 }

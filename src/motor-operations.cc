@@ -223,7 +223,6 @@ void MotionQueueMotorOperations::Enqueue(const LinearSegmentSteps &param) {
 void MotionQueueMotorOperations::MotorEnable(bool on) {
   backend_->WaitQueueEmpty();
   backend_->MotorEnable(on);
-  state_ = on ? RUNNING : STOPPED;
 }
 
 void MotionQueueMotorOperations::WaitQueueEmpty() {
@@ -279,14 +278,20 @@ public:
 
   bool NextFactorValue() {
     const float ct = get_time(st_);
-    if (ct > et_) {
-      if (next_state_ == STOPPED) backend_->MotorEnable(false);
+    if (ct > et_) { // We are done
       backend_->SetSpeedFactor(final_value_);
+      if (next_state_ == PAUSED) {
+        backend_->MotorEnable(false);
+      } else if (next_state_ == STOPPED ) {
+        backend_->MotorEnable(false);
+        backend_->Reset();
+      }
       *state_ = next_state_;
       delete this;
       return false;
     }
-    const float factor = 1 / (quota_ + sign_ * ct / et_);
+
+    const float factor = quota_ + sign_ * ct / et_;
     backend_->SetSpeedFactor(factor);
 
     // Arm it again
@@ -313,19 +318,18 @@ private:
 };
 
 void MotionQueueMotorOperations::RunAsyncStop(FDMultiplexer *event_server) {
-  RunAsyncPause(event_server);
-  backend_->Reset();
-}
-
-void MotionQueueMotorOperations::RunAsyncPause(FDMultiplexer *event_server) {
-  if (state_ == STOPPED || state_ == BUSY) return;
-  state_ = BUSY;
+  if (state_ == STOPPED) return;
+  else if (state_ == PAUSED) backend_->Reset();
   new SpeedFactorProfiler(event_server, &state_, backend_, STOPPED, 1e5, 0.1);
 }
 
+void MotionQueueMotorOperations::RunAsyncPause(FDMultiplexer *event_server) {
+  if (state_ == STOPPED || state_ == PAUSED) return;
+  new SpeedFactorProfiler(event_server, &state_, backend_, PAUSED, 1e5, 0.1);
+}
+
 void MotionQueueMotorOperations::RunAsyncResume(FDMultiplexer *event_server) {
-  if (state_ == RUNNING || state_ == BUSY) return;
-  state_ = BUSY;
+  if (state_ != PAUSED) return;
   new SpeedFactorProfiler(event_server, &state_, backend_, RUNNING, 1e5, 0.1);
 }
 

@@ -30,6 +30,7 @@
 #define QUEUE_ELEMENT_SIZE (SIZE(QueueHeader) + SIZE(TravelParameters))
 #define QUEUE_OFFSET 4
 #define TIME_FACTOR (QUEUE_LEN * QUEUE_ELEMENT_SIZE + QUEUE_OFFSET)
+#define CURRENT_DELAY (TIME_FACTOR + 4)
 
 #define PARAM_START r7
 #define PARAM_END  r19
@@ -268,8 +269,8 @@ WAIT_RESUME:
 	MOV r4, TIME_FACTOR
 	;; Update the loop_skip fraction
 	LBCO &r4, CONST_PRUDRAM, r4, 4
-	;; If the skip frac is 0x00000000, let's stop completely.
-	MOV r5, 0
+	;; If the skip frac is 0xffffffff, let's stop completely.
+	MOV r5, 0xffffffff
 	QBEQ WAIT_RESUME, r4, r5
 
 RESET_COUNTER:

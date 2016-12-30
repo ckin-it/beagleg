@@ -852,12 +852,13 @@ void GCodeMachineControl::Impl::HandleStop() {
   }
   // Update the parser as well
   parser_->UpdateMachinePosition(machine_pos);
+  mprintf("stopped");
+  parser_->EnableAsyncStream();
 }
 
 void GCodeMachineControl::Impl::HandlePause() {
   // Schedule Pause
   motor_ops_->RunAsyncPause(event_server_);
-
 }
 
 void GCodeMachineControl::Impl::HandleResume() {

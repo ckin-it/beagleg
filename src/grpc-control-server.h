@@ -25,8 +25,9 @@
 class GrpcControlServer {
 public:
 
-  ControlServer(GCodeMachineControl *machine, FDMultiplexer *event_server);
-  ~ControlServer();
+  GrpcControlServer(GCodeMachineControl *machine,
+                                 FDMultiplexer *event_server);
+  ~GrpcControlServer();
 
   void Run();
 

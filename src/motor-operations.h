@@ -74,17 +74,16 @@ public:
 };
 
 typedef enum state {
-  IDLE, // Just created
   RUNNING, // Normal
-  STOPPED, // Paused or stopped
-  BUSY // Async tasks are actually executing
+  STOPPED, // Stopped
+  PAUSED, // Paused
 } State;
 
 class MotionQueueMotorOperations : public MotorOperations {
 public:
   // Initialize motor operations, sending planned results into the motion backend.
   MotionQueueMotorOperations(MotionQueue *backend) : backend_(backend),
-                                                     state_(IDLE){}
+                                                     state_(RUNNING) {}
 
   virtual void Enqueue(const LinearSegmentSteps &segment);
   virtual void MotorEnable(bool on);

@@ -20,18 +20,20 @@
 #include <memory>
 #include <string>
 #include <unistd.h>
+#include <thread>
 
 #include <grpc++/grpc++.h>
 #include "control-interface.grpc.pb.h"
 
-#include "grpc-control-server.h"
 #include "gcode-machine-control.h"
+#include "grpc-control-server.h"
 #include "fd-mux.h"
 #include "logging.h"
 
 using grpc::Server;
 using grpc::ServerBuilder;
 using grpc::ServerContext;
+using grpc::ServerWriter;
 using grpc::Status;
 using beagleg::Empty;
 using beagleg::MachineStats;
@@ -46,7 +48,6 @@ typedef enum commands {
   RESUME
 } Command;
 
-struct
 class BeagleGControlsServiceImpl final : public BeagleGControls::Service {
 public:
   BeagleGControlsServiceImpl(int pipe_fd[2]) {
@@ -89,12 +90,13 @@ private:
   }
 
   std::mutex mutex_;
-  int pipe_fd_;
+  int pipe_fd_[2];
 };
 
 class GrpcControlServer::Impl {
 public:
-  Impl(GCodeMachineControl *machine, FDMultiplexer *event_server);
+  Impl(GCodeMachineControl *machine, FDMultiplexer *event_server)
+       : machine_(machine), event_server_(event_server) {}
   void Run();
 
 private:
@@ -102,45 +104,43 @@ private:
   FDMultiplexer *const event_server_;
 
   int pipe_fd_[2];
-  std::unique_ptr<std::thread> grpc_wait_;
+  std::thread *grpc_wait_;
   std::unique_ptr<Server> server_;
-  void HandleCommand();
+  bool HandleCommand();
 };
-
-GrpcControlServer::Impl(GCodeMachineControl *machine,
-                        FDMultiplexer *event_server)
-                        : machine_(machine), event_server_(event_server) {
-}
 
 void GrpcControlServer::Impl::Run() {
   // Create the pipe()
   if(pipe(pipe_fd_) < 0) perror("pipe");
 
-  std::string server_address("0.0.0.0:50051");
-  BeagleGControlsServiceImpl service(pipe_fd_);
-
-  ServerBuilder builder;
-  // Listen on the given address without any authentication mechanism.
-  builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
-  // Register "service" as the instance through which we'll communicate with
-  // clients. In this case it corresponds to an *synchronous* service.
-  builder.RegisterService(&service);
-  // Finally assemble the server.
-  server_(builder.BuildAndStart());
-  Log_debug("Started the control server on %d", server_address);
-
   // Register the async task
-  event_server_->RunOnReadable(pipe_fd_[0], [this](){ HandleCommand(); })
+  event_server_->RunOnReadable(pipe_fd_[0],
+                               [this](){ return HandleCommand();});
 
   // Init the server and launch the wait on a thread
-  grpc_wait_(new std::thread([this](){ server->Wait(); });
+  grpc_wait_ = new std::thread([this](){
+    std::string server_address("0.0.0.0:50051");
+    BeagleGControlsServiceImpl service(pipe_fd_);
+
+    ServerBuilder builder;
+    // Listen on the given address without any authentication mechanism.
+    builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
+    // Register "service" as the instance through which we'll communicate with
+    // clients. In this case it corresponds to an *synchronous* service.
+    builder.RegisterService(&service);
+    // Finally assemble the server.
+    server_ = builder.BuildAndStart();
+    Log_debug("Started the control server on %s", server_address.c_str());
+
+    server_->Wait();
+  });
 }
 
-void GrpcControlServer::Impl::HandleCommand() {
+bool GrpcControlServer::Impl::HandleCommand() {
   Command command;
   if (read(pipe_fd_[0], &command, sizeof(command)) < 0)
     perror("HandleCommand pipe read()");
-
+  
   switch (command) {
     case STOP: machine_->Stop(); break;
     case PAUSE: machine_->Pause(); break;
@@ -151,13 +151,10 @@ void GrpcControlServer::Impl::HandleCommand() {
 }
 
 void GrpcControlServer::GrpcControlServer::Run() {
-  impl->Run();
+  impl_->Run();
 }
 
-GrpcControlServer::~GrpcControlServer(GCodeMachineControl *machine,
-                                 FDMultiplexer *event_server) {
-  delete impl_;
-}
+GrpcControlServer::~GrpcControlServer() { delete impl_; }
 
 GrpcControlServer::GrpcControlServer(GCodeMachineControl *machine,
                                      FDMultiplexer *event_server)

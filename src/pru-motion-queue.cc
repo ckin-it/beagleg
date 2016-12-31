@@ -265,7 +265,32 @@ void PRUMotionQueue::Reset() {
   for (int i = 0; i < QUEUE_LEN; ++i) {
     pru_data_->ring_buffer[i].state = STATE_EMPTY;
   }
-  SetSpeedFactor(1);
+
+  // The previous one in this case will be the last of the queue.
+  // The pru will reset on index 0
+  struct HistorySegment &previous = shadow_queue_[QUEUE_LEN -1];
+
+  // Let's copy the actual number of loops to the *previous*
+  // End
+  const uint64_t max_fraction = 0xFFFFFFFF;
+  const struct QueueStatus status = *(struct QueueStatus*) &pru_data_->status;
+  const struct HistorySegment &current = shadow_queue_[status.index];
+  const uint64_t counter = status.counter;
+
+  // Update QUEUE_LEN - 1 containing the cumulative loops of now
+  for (int i = 0; i < MOTION_MOTOR_COUNT; ++i) {
+    const int64_t sign = (current.direction_bits >> i) & 1 ? -1 : 1;
+    uint64_t loops = current.fractions[i];
+    loops *= counter;
+    loops /= max_fraction;
+    previous.cumulative_loops[i] = current.cumulative_loops[i] - sign * loops;
+  }
+
+  // So that if we trigger GetMotorsStatus we read from the previous slot
+  pru_data_->status.counter = 0;
+  pru_data_->status.index = QUEUE_LEN - 1;
+  // When we restart, the new enqueued slot will pick the cumulative loops
+  // from the QUEUE_LEN - 1
   queue_pos_ = 0;
   // Clean the overflow queue
   clear_std_queue(overflow_queue_);
@@ -274,6 +299,7 @@ void PRUMotionQueue::Reset() {
   handler_is_running_ = false;
   fmux_->ScheduleDelete(pru_interface_->EventFd());
   pru_interface_->ResetPru();
+  SetSpeedFactor(1);
 }
 
 void PRUMotionQueue::MotorEnable(bool on) {

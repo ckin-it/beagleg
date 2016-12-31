@@ -154,6 +154,8 @@ void MotionQueueMotorOperations::EnqueueInternal(const LinearSegmentSteps &param
   new_element.aux = param.aux_bits;
   new_element.state = STATE_FILLED;
   backend_->MotorEnable(true);
+  // We were in stop, new stuff, so we are running again
+  if (state_ == STOPPED) state_ = RUNNING;
   backend_->Enqueue(&new_element);
 }
 
@@ -248,10 +250,12 @@ public:
                       MotionQueue *backend,
                       State next_state,
                       long ns,
-                      float et)
+                      float et,
+                      const Callback &callback)
                       : event_server_(event_server), state_(state),
                         backend_(backend), next_state_(next_state), ns_(ns),
-                        et_(et), final_value_((next_state == RUNNING) ? 1 : 0),
+                        et_(et), callback_(callback),
+                        final_value_((next_state == RUNNING) ? 1 : 0),
                         sign_((next_state == RUNNING) ? 1 : -1),
                         quota_((next_state == RUNNING) ? 0 : 1) {
     assert(et_ > 0);
@@ -261,13 +265,13 @@ public:
     if (next_state_ == RUNNING) backend_->MotorEnable(true);
     // Create a timer
     timer_ = timerfd_create(CLOCK_REALTIME, 0);
-    if (timer_ == -1) Log_error("timerfd_create");
+    if (timer_ == -1) perror("timerfd_create");
 
     struct itimerspec timeout = {0};
     timeout.it_value.tv_nsec = ns_;
 
     if (timerfd_settime(timer_, 0, &timeout, NULL) == -1)
-      Log_error("timerfd_settime");
+      perror("timerfd_settime");
 
     event_server_->RunOnReadable(timer_, [this](){
       // Consume the timer
@@ -287,6 +291,7 @@ public:
         backend_->Reset();
       }
       *state_ = next_state_;
+      callback_();
       delete this;
       return false;
     }
@@ -298,7 +303,7 @@ public:
     struct itimerspec timeout = {0};
     timeout.it_value.tv_nsec = ns_;
     if (timerfd_settime(timer_, 0, &timeout, NULL) == -1)
-      Log_error("timerfd_settime");
+      perror("timerfd_settime");
     return true;
   }
 
@@ -312,25 +317,30 @@ private:
   const State next_state_;
   const long ns_;
   const float et_;
+  const Callback callback_;
   const float final_value_;
   const float sign_;
   const float quota_;
 };
 
-void MotionQueueMotorOperations::RunAsyncStop(FDMultiplexer *event_server) {
+void MotionQueueMotorOperations::RunAsyncStop(FDMultiplexer *event_server,
+                                              const Callback &callback) {
   if (state_ == STOPPED) return;
   else if (state_ == PAUSED) backend_->Reset();
-  new SpeedFactorProfiler(event_server, &state_, backend_, STOPPED, 1e5, 0.1);
+  new SpeedFactorProfiler(event_server, &state_, backend_, STOPPED, 1e5, 0.1,
+                          callback);
 }
 
 void MotionQueueMotorOperations::RunAsyncPause(FDMultiplexer *event_server) {
   if (state_ == STOPPED || state_ == PAUSED) return;
-  new SpeedFactorProfiler(event_server, &state_, backend_, PAUSED, 1e5, 0.1);
+  new SpeedFactorProfiler(event_server, &state_, backend_, PAUSED, 1e5, 0.1,
+                          [](){});
 }
 
 void MotionQueueMotorOperations::RunAsyncResume(FDMultiplexer *event_server) {
   if (state_ != PAUSED) return;
-  new SpeedFactorProfiler(event_server, &state_, backend_, RUNNING, 1e5, 0.1);
+  new SpeedFactorProfiler(event_server, &state_, backend_, RUNNING, 1e5, 0.1,
+                          [](){});
 }
 
 void MotionQueueMotorOperations::GetRealtimeStatus(

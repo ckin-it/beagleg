@@ -101,4 +101,5 @@ bool UioPrussInterface::Shutdown() {
 
 void UioPrussInterface::ResetPru() {
   prussdrv_pru_reset(PRU_NUM);
+  prussdrv_pru_enable_at(PRU_NUM, 0);
 }

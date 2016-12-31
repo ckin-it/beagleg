@@ -46,6 +46,8 @@ struct LinearSegmentSteps {
   int steps[BEAGLEG_NUM_MOTORS]; // Steps for axis. Negative for reverse.
 };
 
+typedef std::function<void()> Callback;
+
 class MotorOperations {  // Rename SegmentQueue ?
 public:
   virtual ~MotorOperations() {}
@@ -66,11 +68,11 @@ public:
 
   virtual void GetRealtimeStatus(int pos_steps[BEAGLEG_NUM_MOTORS],
                                  unsigned short *aux_status) {}
-  virtual void RunAsyncStop(FDMultiplexer *event_server) {}
+  virtual void RunAsyncStop(FDMultiplexer *event_server,
+                            const Callback &callback) {}
   virtual void RunAsyncPause(FDMultiplexer *event_server) {}
   virtual void RunAsyncResume(FDMultiplexer *event_server) {}
 
-  typedef std::function<void()> Callback;
   virtual void RunOnEmptyQueue(const Callback &callback) {}
 };
 
@@ -92,7 +94,8 @@ public:
 
   virtual void GetRealtimeStatus(int pos_steps[BEAGLEG_NUM_MOTORS],
                                  unsigned short *aux_status);
-  virtual void RunAsyncStop(FDMultiplexer *event_server);
+  virtual void RunAsyncStop(FDMultiplexer *event_server,
+                            const Callback &callback);
   virtual void RunAsyncPause(FDMultiplexer *event_server);
   virtual void RunAsyncResume(FDMultiplexer *event_server);
 

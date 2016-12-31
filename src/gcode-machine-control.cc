@@ -846,26 +846,28 @@ void GCodeMachineControl::Impl::HandleStop() {
   parser_->DisableAsyncStream(true);
 
   // Schedule Stop
-  motor_ops_->RunAsyncStop(event_server_);
-
-  planner_->ExternalSetPathIsHalted();
-  AxesRegister machine_pos;
-  GetRealtimeStatus(&machine_pos, NULL);
-  for (const GCodeParserAxis axis : AllAxes()) {
-    planner_->SetExternalPosition(axis, machine_pos[axis]);
-  }
-  // Update the parser as well
-  parser_->UpdateMachinePosition(machine_pos);
-  mprintf("stopped");
-  parser_->EnableAsyncStream();
+  motor_ops_->RunAsyncStop(event_server_, [this]() {
+    planner_->ExternalSetPathIsHalted();
+    AxesRegister machine_pos;
+    GetRealtimeStatus(&machine_pos, NULL);
+    for (const GCodeParserAxis axis : AllAxes()) {
+      planner_->SetExternalPosition(axis, machine_pos[axis]);
+    }
+    // Update the parser as well
+    parser_->UpdateMachinePosition(machine_pos);
+    mprintf("stopped");
+    parser_->EnableAsyncStream();
+  });
 }
 
 void GCodeMachineControl::Impl::HandlePause() {
+  if (!parser_) return;
   // Schedule Pause
   motor_ops_->RunAsyncPause(event_server_);
 }
 
 void GCodeMachineControl::Impl::HandleResume() {
+  if (!parser_) return;
   // Schedule Resume
   motor_ops_->RunAsyncResume(event_server_);
 

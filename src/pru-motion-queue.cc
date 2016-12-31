@@ -90,8 +90,13 @@ struct HistorySegment {
   uint32_t fractions[MOTION_MOTOR_COUNT];
   uint32_t cumulative_loops[MOTION_MOTOR_COUNT];
   uint8_t direction_bits;
+  uint16_t aux;
 };
 
+// TODO: Avoid leakeage of context,
+// in RegisterHistorySegment const uint64_t max_fraction = 0xFFFFFFFF;
+// needs to be divided by LOOP_PER_STEP but this is something to be done
+// inside motor operations
 void PRUMotionQueue::RegisterHistorySegment(const MotionSegment &element) {
   const uint64_t max_fraction = 0xFFFFFFFF;
   const unsigned int last_insert_index = (queue_pos_ - 1) % QUEUE_LEN;
@@ -117,13 +122,15 @@ void PRUMotionQueue::RegisterHistorySegment(const MotionSegment &element) {
   }
 
   new_slot->direction_bits = element.direction_bits;
+  new_slot->aux = element.aux;
 }
 
-void PRUMotionQueue::GetMotorsLoops(MotorsRegister *absolute_pos_loops) {
+// TODO: GetMotorsLoops returns Auxes? hmm not very clear
+void PRUMotionQueue::GetMotorsStatus(
+    MotorsRegister *absolute_pos_loops, unsigned short *aux) {
   const uint64_t max_fraction = 0xFFFFFFFF;
   const struct QueueStatus status = *(struct QueueStatus*) &pru_data_->status;
   const struct HistorySegment &current = shadow_queue_[status.index];
-  Log_debug("%u", status.counter);
   const uint64_t counter = status.counter;
   for (int i = 0; i < MOTION_MOTOR_COUNT; ++i) {
     const int64_t sign = (current.direction_bits >> i) & 1 ? -1 : 1;
@@ -132,6 +139,7 @@ void PRUMotionQueue::GetMotorsLoops(MotorsRegister *absolute_pos_loops) {
     loops /= max_fraction;
     (*absolute_pos_loops)[i] = current.cumulative_loops[i] - sign * loops;
   }
+  if (aux != NULL) *aux = current.aux;
 }
 
 // Stop gap for compiler attempting to be overly clever when copying between

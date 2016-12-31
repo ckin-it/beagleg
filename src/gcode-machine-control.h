@@ -89,7 +89,7 @@ class GCodeMachineControl {
   // return in *pos register.
   void GetHomePos(AxesRegister *pos);
 
-  void GetCurrentPos(AxesRegister *current_pos);
+  void GetRealtimeStatus(AxesRegister *current_pos, unsigned short *aux_bits);
   void Stop();
   void Pause();
   void Resume();

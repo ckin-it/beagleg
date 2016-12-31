@@ -111,7 +111,8 @@ public:
 
   // Fill the argument with the current absolute position in loops
   // for each motor.
-  virtual void GetMotorsLoops(MotorsRegister *absolute_pos_loops) = 0;
+  virtual void GetMotorsStatus(MotorsRegister *absolute_pos_loops,
+                               unsigned short *aux) = 0;
 
   // Set the speed factor, > 1 faster, == 1 normal speed, == 0 stop.
   virtual void SetSpeedFactor(const float factor) = 0;
@@ -139,7 +140,7 @@ public:
   void WaitQueueEmpty();
   void MotorEnable(bool on);
   void Shutdown(bool flush_queue);
-  void GetMotorsLoops(MotorsRegister *absolute_pos_loops);
+  void GetMotorsStatus(MotorsRegister *absolute_pos_loops, unsigned short *aux);
   void SetSpeedFactor(const float factor);
   void Reset();
 
@@ -179,7 +180,8 @@ public:
   void WaitQueueEmpty() {}
   void MotorEnable(bool on) {}
   void Shutdown(bool flush_queue) {}
-  void GetMotorsLoops(MotorsRegister *absolute_pos_loops) {}
+  void GetMotorsStatus(MotorsRegister *absolute_pos_loops,
+                       unsigned short *aux) {}
   void SetSpeedFactor(const float factor) {}
   void Reset() {}
 };

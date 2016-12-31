@@ -333,12 +333,16 @@ void MotionQueueMotorOperations::RunAsyncResume(FDMultiplexer *event_server) {
   new SpeedFactorProfiler(event_server, &state_, backend_, RUNNING, 1e5, 0.1);
 }
 
-void MotionQueueMotorOperations::GetRealtimePosition(int pos_steps[BEAGLEG_NUM_MOTORS]) {
+void MotionQueueMotorOperations::GetRealtimeStatus(
+    int pos_steps[BEAGLEG_NUM_MOTORS], unsigned short *aux_status) {
   MotorsRegister steps;
-  backend_->GetMotorsLoops(&steps);
+  backend_->GetMotorsStatus(&steps, aux_status);
   for (int i = 0; i < MOTION_MOTOR_COUNT; ++i) {
-    pos_steps[i] = steps[i] / LOOPS_PER_STEP; // Convert into steps
-    //Log_debug("%d, %d", i, steps[i]);
+    // We are not actually retrieving loops, but loops * 2
+    // that's due to the max_fraction in pru-motion-queue which is not
+    // 0xFFFFFFFF / LOOPS_PER_STEP
+    // pos_steps[i] = steps[i] / LOOPS_PER_STEP; // Convert into steps
+    pos_steps[i] = steps[i];
   }
 }
 

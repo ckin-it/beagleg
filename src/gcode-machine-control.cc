@@ -79,7 +79,7 @@ public:
   // object.
   bool Init();
 
-  void GetRealtimePosition(AxesRegister *pos);
+  void GetRealtimeStatus(AxesRegister *pos, unsigned short *aux_bits);
   void HandleStop();
   void HandlePause();
   void HandleResume();
@@ -824,14 +824,15 @@ bool GCodeMachineControl::Impl::probe_axis(float feedrate,
   return true;
 }
 
-void GCodeMachineControl::Impl::GetRealtimePosition(AxesRegister *pos) {
+void GCodeMachineControl::Impl::GetRealtimeStatus(AxesRegister *pos,
+                                                  unsigned short *aux_bits) {
   int motors_steps[HardwareMapping::NUM_MOTORS];
   int axes_steps[GCODE_NUM_AXES];
-  motor_ops_->GetRealtimePosition(motors_steps);
+  motor_ops_->GetRealtimeStatus(motors_steps, aux_bits);
   hardware_mapping_-> \
     AssignMotorsStepsToAxis(axes_steps, motors_steps);
   for (const GCodeParserAxis axis : AllAxes()) {
-    (*pos)[axis] = axes_steps[axis] / cfg_.steps_per_mm[axis];
+    (*pos)[axis] = (cfg_.steps_per_mm[axis] != 0) ? axes_steps[axis] / cfg_.steps_per_mm[axis] : 0;
   }
 }
 
@@ -839,6 +840,9 @@ void GCodeMachineControl::Impl::HandleStop() {
   // Disable new parsing (true stays for flush or not)
   // We will reset the queue asyncronously, let's block the comunication
   // and discard everything already enqueued.
+
+  // Nothing has been parsed yet.
+  if (!parser_) return;
   parser_->DisableAsyncStream(true);
 
   // Schedule Stop
@@ -846,7 +850,7 @@ void GCodeMachineControl::Impl::HandleStop() {
 
   planner_->ExternalSetPathIsHalted();
   AxesRegister machine_pos;
-  GetRealtimePosition(&machine_pos);
+  GetRealtimeStatus(&machine_pos, NULL);
   for (const GCodeParserAxis axis : AllAxes()) {
     planner_->SetExternalPosition(axis, machine_pos[axis]);
   }
@@ -908,8 +912,9 @@ void GCodeMachineControl::SetMsgOut(FILE *msg_stream) {
   impl_->set_msg_stream(msg_stream);
 }
 
-void GCodeMachineControl::GetCurrentPos(AxesRegister *current_pos) {
-  impl_->GetRealtimePosition(current_pos);
+void GCodeMachineControl::GetRealtimeStatus(AxesRegister *current_pos,
+                                            unsigned short *aux_bits) {
+  impl_->GetRealtimeStatus(current_pos, aux_bits);
 }
 
 void GCodeMachineControl::Stop() {

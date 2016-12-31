@@ -18,7 +18,7 @@ service BeagleGControls {
 
 message MachineStats {
   // Auxes
-  map<int32, bool> auxes = 1;
+  uint32 auxes = 1;
 
   // Current position of the axes
   map<string, float> axes = 2;

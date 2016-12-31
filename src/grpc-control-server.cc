@@ -22,11 +22,13 @@
 #include <unistd.h>
 #include <thread>
 #include <sys/timerfd.h>
+#include <stdint.h>
 
 #include <grpc++/grpc++.h>
 #include "control-interface.grpc.pb.h"
 
 #include "gcode-machine-control.h"
+#include "gcode-parser.h"
 #include "grpc-control-server.h"
 #include "fd-mux.h"
 #include "logging.h"
@@ -43,6 +45,11 @@ using beagleg::BeagleGControls;
 // To add in the makefile
 // protoc -I . --grpc_out=. --plugin=protoc-gen-grpc=`which grpc_cpp_plugin` --cpp_out=. control-interface.proto
 
+typedef struct {
+  float axis_pos[GCODE_NUM_AXES];
+  uint16_t aux;
+} DataStream;
+
 typedef enum commands {
   STOP,
   PAUSE,
@@ -51,9 +58,12 @@ typedef enum commands {
 
 class BeagleGControlsServiceImpl final : public BeagleGControls::Service {
 public:
-  BeagleGControlsServiceImpl(int pipe_fd[2]) {
-    pipe_fd_[0] = pipe_fd[0]; // Reader
-    pipe_fd_[1] = pipe_fd[1]; // Writer
+  BeagleGControlsServiceImpl(int command_pipe_fd[2], int stream_pipe_fd[2]) {
+    command_pipe_fd_[0] = command_pipe_fd[0]; // Reader
+    command_pipe_fd_[1] = command_pipe_fd[1]; // Writer
+
+    stream_pipe_fd_[0] = stream_pipe_fd[0]; // Reader
+    stream_pipe_fd_[1] = stream_pipe_fd[1]; // Writer
   }
 
   Status Stop(ServerContext *context, const Empty *request, Empty *reply)
@@ -80,18 +90,44 @@ public:
   Status MachineStatus(ServerContext *context, const Empty *request,
                        ServerWriter<MachineStats> *reply) override {
     // Get the position
+    DataStream data;
+    MachineStats payload;
+    auto map = payload.mutable_axes();
+    std::string name;
+    for (;;) {
+      if (read(stream_pipe_fd_[0], &data, sizeof(data)) < 0)
+        perror("stream read pipe()");
+
+      name = 'X'; (*map)[name] = data.axis_pos[0];
+      name = 'Y'; (*map)[name] = data.axis_pos[1];
+      name = 'Z'; (*map)[name] = data.axis_pos[2];
+      name = 'E'; (*map)[name] = data.axis_pos[3];
+      name = 'A'; (*map)[name] = data.axis_pos[4];
+      name = 'B'; (*map)[name] = data.axis_pos[5];
+      name = 'C'; (*map)[name] = data.axis_pos[6];
+      name = 'U'; (*map)[name] = data.axis_pos[7];
+      name = 'V'; (*map)[name] = data.axis_pos[8];
+      name = 'W'; (*map)[name] = data.axis_pos[9];
+
+      payload.set_auxes(data.aux);
+
+      reply->Write(payload);
+    }
     return Status::OK;
   }
 
 private:
   void SendCommandToPipe(const Command command) {
-    std::lock_guard<std::mutex> guard(mutex_);
-    if (write(pipe_fd_[1], &command, sizeof(Command)) < 0)
+    std::lock_guard<std::mutex> guard(write_mutex_);
+    if (write(command_pipe_fd_[1], &command, sizeof(Command)) < 0)
       perror("pip_fd write()");
   }
 
-  std::mutex mutex_;
-  int pipe_fd_[2];
+  std::mutex write_mutex_;
+
+  int command_pipe_fd_[2];
+  int stream_pipe_fd_[2];
+
 };
 
 class GrpcControlServer::Impl {
@@ -104,26 +140,30 @@ private:
   GCodeMachineControl *const machine_;
   FDMultiplexer *const event_server_;
 
-  int pipe_fd_[2];
+  int command_pipe_fd_[2];
+  int stream_pipe_fd_[2];
   int timer_;
   std::thread *grpc_wait_;
   std::unique_ptr<Server> server_;
   bool HandleCommand();
-  bool PositionStreamer();
+  bool StatusStreamer();
 };
 
+// TODO: we don't really need two pipes, we could use just one
+// and be careful of not triggering the other async task
 void GrpcControlServer::Impl::Run() {
   // Create the pipe()
-  if(pipe(pipe_fd_) < 0) perror("pipe");
+  if(pipe(command_pipe_fd_) < 0) perror("pipe");
+  if(pipe(stream_pipe_fd_) < 0) perror("pipe");
 
   // Register the async task
-  event_server_->RunOnReadable(pipe_fd_[0],
+  event_server_->RunOnReadable(command_pipe_fd_[0],
                                [this](){ return HandleCommand();});
 
   // Init the server and launch the wait on a thread
   grpc_wait_ = new std::thread([this](){
     std::string server_address("0.0.0.0:50051");
-    BeagleGControlsServiceImpl service(pipe_fd_);
+    BeagleGControlsServiceImpl service(command_pipe_fd_, stream_pipe_fd_);
 
     ServerBuilder builder;
     // Listen on the given address without any authentication mechanism.
@@ -148,16 +188,22 @@ void GrpcControlServer::Impl::Run() {
     perror("timerfd_settime");
 
   event_server_->RunOnReadable(timer_, [this](){
-    return PositionStreamer();
+    return StatusStreamer();
   });
 }
 
-bool GrpcControlServer::Impl::PositionStreamer() {
+bool GrpcControlServer::Impl::StatusStreamer() {
   AxesRegister axes_pos;
-  machine_->GetCurrentPos(&axes_pos);
-  // for (const GCodeParserAxis axis : AllAxes()) {
-  //   Log_debug("X: %f", axes_pos[axis]);
-  // }
+  static DataStream data;
+  machine_->GetRealtimeStatus(&axes_pos, &data.aux);
+
+
+  for (const GCodeParserAxis axis : AllAxes()) {
+    data.axis_pos[axis] = axes_pos[axis];
+  }
+
+  if (write(stream_pipe_fd_[1], &data, sizeof(data)) < 0)
+    perror("pipe write()");
 
   struct itimerspec timeout = {0};
   timeout.it_value.tv_nsec = 1e8;
@@ -170,7 +216,7 @@ bool GrpcControlServer::Impl::PositionStreamer() {
 
 bool GrpcControlServer::Impl::HandleCommand() {
   Command command;
-  if (read(pipe_fd_[0], &command, sizeof(command)) < 0)
+  if (read(command_pipe_fd_[0], &command, sizeof(command)) < 0)
     perror("HandleCommand pipe read()");
 
   switch (command) {

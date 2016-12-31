@@ -64,7 +64,8 @@ public:
   // Wait, until all elements in the ring-buffer are consumed.
   virtual void WaitQueueEmpty() = 0;
 
-  virtual void GetRealtimePosition(int pos_steps[BEAGLEG_NUM_MOTORS]) {}
+  virtual void GetRealtimeStatus(int pos_steps[BEAGLEG_NUM_MOTORS],
+                                 unsigned short *aux_status) {}
   virtual void RunAsyncStop(FDMultiplexer *event_server) {}
   virtual void RunAsyncPause(FDMultiplexer *event_server) {}
   virtual void RunAsyncResume(FDMultiplexer *event_server) {}
@@ -89,7 +90,8 @@ public:
   virtual void MotorEnable(bool on);
   virtual void WaitQueueEmpty();
 
-  virtual void GetRealtimePosition(int pos_steps[BEAGLEG_NUM_MOTORS]);
+  virtual void GetRealtimeStatus(int pos_steps[BEAGLEG_NUM_MOTORS],
+                                 unsigned short *aux_status);
   virtual void RunAsyncStop(FDMultiplexer *event_server);
   virtual void RunAsyncPause(FDMultiplexer *event_server);
   virtual void RunAsyncResume(FDMultiplexer *event_server);

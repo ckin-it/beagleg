@@ -20,6 +20,7 @@
 #define _BEAGLEG_MOTOR_OPERATIONS_H_
 
 #include <stdio.h>
+#include "fd-mux.h"
 
 class MotionQueue;
 
@@ -45,6 +46,8 @@ struct LinearSegmentSteps {
   int steps[BEAGLEG_NUM_MOTORS]; // Steps for axis. Negative for reverse.
 };
 
+typedef std::function<void()> Callback;
+
 class MotorOperations {  // Rename SegmentQueue ?
 public:
   virtual ~MotorOperations() {}
@@ -62,22 +65,49 @@ public:
 
   // Wait, until all elements in the ring-buffer are consumed.
   virtual void WaitQueueEmpty() = 0;
+
+  virtual void GetRealtimeStatus(int pos_steps[BEAGLEG_NUM_MOTORS],
+                                 unsigned short *aux_status) {}
+  virtual void RunAsyncStop(FDMultiplexer *event_server,
+                            const Callback &callback) {}
+  virtual void RunAsyncPause(FDMultiplexer *event_server) {}
+  virtual void RunAsyncResume(FDMultiplexer *event_server) {}
+
+  virtual void RunOnEmptyQueue(const Callback &callback) {}
 };
+
+typedef enum state {
+  RUNNING, // Normal
+  STOPPED, // Stopped
+  PAUSED, // Paused
+} State;
 
 class MotionQueueMotorOperations : public MotorOperations {
 public:
   // Initialize motor operations, sending planned results into the motion backend.
-  MotionQueueMotorOperations(MotionQueue *backend) : backend_(backend) {}
+  MotionQueueMotorOperations(MotionQueue *backend) : backend_(backend),
+                                                     state_(RUNNING) {}
 
   virtual void Enqueue(const LinearSegmentSteps &segment);
   virtual void MotorEnable(bool on);
   virtual void WaitQueueEmpty();
 
+  virtual void GetRealtimeStatus(int pos_steps[BEAGLEG_NUM_MOTORS],
+                                 unsigned short *aux_status);
+  virtual void RunAsyncStop(FDMultiplexer *event_server,
+                            const Callback &callback);
+  virtual void RunAsyncPause(FDMultiplexer *event_server);
+  virtual void RunAsyncResume(FDMultiplexer *event_server);
+
+  virtual void RunOnEmptyQueue(const Callback &handler);
+
 private:
+  void execute_callback_if_queue_empty();
   void EnqueueInternal(const LinearSegmentSteps &param,
                        int defining_axis_steps);
 
   MotionQueue *backend_;
+  State state_;
 };
 
 #endif  // _BEAGLEG_MOTOR_OPERATIONS_H_

@@ -25,6 +25,7 @@
 #include "motor-operations.h"
 #include "logging.h"
 #include "container.h"
+#include "fd-mux.h"
 
 // The target position vector is essentially a position in the
 // GCODE_NUM_AXES-dimensional space.
@@ -51,7 +52,8 @@ class Planner::Impl {
 public:
   Impl(const MachineControlConfig *config,
        HardwareMapping *hardware_mapping,
-       MotorOperations *motor_backend);
+       MotorOperations *motor_backend,
+       FDMultiplexer *event_server);
   ~Impl();
 
   void move_machine_steps(const struct AxisTarget *last_pos,
@@ -88,10 +90,15 @@ public:
 
   float euclidian_speed(const struct AxisTarget *t);
 
+  void ExternalSetPathIsHalted();
   void GetCurrentPosition(AxesRegister *pos);
   int DirectDrive(GCodeParserAxis axis, float distance, float v0, float v1);
   void SetExternalPosition(GCodeParserAxis axis, float pos);
-
+  void SetInputControls(const InputControl &enable_input,
+                        const InputControl &disable_input) {
+    enable_input_ = enable_input;
+    disable_input_ = disable_input;
+  }
   // Given the desired target speed of the defining axis and the steps to be
   // performed on all axes, determine if we need to scale down as to not exceed
   // the individual maximum speed constraints on any axis. Return the new speed
@@ -104,6 +111,7 @@ private:
   const struct MachineControlConfig *const cfg_;
   HardwareMapping *const hardware_mapping_;
   MotorOperations *const motor_ops_;
+  FDMultiplexer *const event_server_;
 
   // Next buffered positions. Written by incoming gcode, read by outgoing
   // motor movements.
@@ -119,6 +127,9 @@ private:
 
   bool path_halted_;
   bool position_known_;
+
+  InputControl enable_input_;
+  InputControl disable_input_;
 };
 
 static inline int round2int(float x) { return (int) roundf(x); }
@@ -240,11 +251,18 @@ static float determine_joining_speed(const struct AxisTarget *from,
   return from_defining_speed;
 }
 
+void Planner::Impl::ExternalSetPathIsHalted() {
+  // Set the precondition, used to inform the planner that (for example)
+  //the path has been externally paused.
+  path_halted_ = true;
+}
+
 Planner::Impl::Impl(const MachineControlConfig *config,
                     HardwareMapping *hardware_mapping,
-                    MotorOperations *motor_backend)
+                    MotorOperations *motor_backend,
+                    FDMultiplexer *event_server)
   : cfg_(config), hardware_mapping_(hardware_mapping),
-    motor_ops_(motor_backend),
+    motor_ops_(motor_backend), event_server_(event_server),
     highest_accel_(-1), path_halted_(true), position_known_(true) {
   // Initial machine position. We assume the homed position here, which is
   // wherever the endswitch is for each axis.
@@ -470,13 +488,25 @@ void Planner::Impl::move_machine_steps(const struct AxisTarget *last_pos,
   subtract_steps(&move_command, accel_command);
   has_move = subtract_steps(&move_command, decel_command);
 
-  if (cfg_->synchronous) motor_ops_->WaitQueueEmpty();
+  if (cfg_->synchronous) {
+    disable_input_();
+    // Run when the queue is empty
+    motor_ops_->RunOnEmptyQueue([this, has_accel, has_move, has_decel,
+        accel_command, move_command, decel_command, target_pos](){
+      if (has_accel) motor_ops_->Enqueue(accel_command);
+      if (has_move) motor_ops_->Enqueue(move_command);
+      if (has_decel) motor_ops_->Enqueue(decel_command);
 
-  if (has_accel) motor_ops_->Enqueue(accel_command);
-  if (has_move) motor_ops_->Enqueue(move_command);
-  if (has_decel) motor_ops_->Enqueue(decel_command);
+      last_aux_bits_ = target_pos->aux_bits;
+      enable_input_();
+    });
+  } else {
+    if (has_accel) motor_ops_->Enqueue(accel_command);
+    if (has_move) motor_ops_->Enqueue(move_command);
+    if (has_decel) motor_ops_->Enqueue(decel_command);
 
-  last_aux_bits_ = target_pos->aux_bits;
+    last_aux_bits_ = target_pos->aux_bits;
+  }
 }
 
 // If we have enough data in the queue, issue motor move.
@@ -610,8 +640,9 @@ void Planner::Impl::SetExternalPosition(GCodeParserAxis axis, float pos) {
 
 Planner::Planner(const MachineControlConfig *config,
                  HardwareMapping *hardware_mapping,
-                 MotorOperations *motor_backend)
-  : impl_(new Impl(config, hardware_mapping, motor_backend)) {
+                 MotorOperations *motor_backend,
+                 FDMultiplexer *event_server)
+  : impl_(new Impl(config, hardware_mapping, motor_backend, event_server)) {
 }
 
 Planner::~Planner() { delete impl_; }
@@ -635,4 +666,13 @@ int Planner::DirectDrive(GCodeParserAxis axis, float distance,
 
 void Planner::SetExternalPosition(GCodeParserAxis axis, float pos) {
   impl_->SetExternalPosition(axis, pos);
+}
+
+void Planner::ExternalSetPathIsHalted() {
+  impl_->ExternalSetPathIsHalted();
+}
+
+void Planner::SetInputControls(const InputControl &enable_input,
+                               const InputControl &disable_input) {
+  impl_->SetInputControls(enable_input, disable_input);
 }

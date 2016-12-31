@@ -63,6 +63,14 @@ bool UioPrussInterface::Init() {
   return true;
 }
 
+int UioPrussInterface::EventFd() {
+  return prussdrv_pru_event_fd(0);
+}
+
+int UioPrussInterface::ClearEvent() {
+  return prussdrv_pru_clear_event(PRU_EVTOUT_0, PRU_ARM_INTERRUPT);
+}
+
 bool UioPrussInterface::AllocateSharedMem(void **pru_mmap, const size_t size) {
   prussdrv_map_prumem(PRU_DATARAM, pru_mmap);
   if (*pru_mmap == NULL) {
@@ -89,4 +97,9 @@ bool UioPrussInterface::Shutdown() {
   prussdrv_pru_disable(PRU_NUM);
   prussdrv_exit();
   return true;
+}
+
+void UioPrussInterface::ResetPru() {
+  prussdrv_pru_reset(PRU_NUM);
+  prussdrv_pru_enable_at(PRU_NUM, 0);
 }

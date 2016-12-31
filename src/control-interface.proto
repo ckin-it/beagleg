@@ -1,0 +1,27 @@
+
+syntax = "proto3";
+package beagleg;
+
+service BeagleGControls {
+  // Pause the machine, clear the queue, wait for new instructions
+  rpc Stop(Empty) returns (Empty);
+
+  // Pause the machine motion
+  rpc Pause(Empty) returns (Empty);
+
+  // Resume the machine motion
+  rpc Resume(Empty) returns (Empty);
+
+  // Stream the position and the aux states
+  rpc MachineStatus(Empty) returns (stream MachineStats);
+}
+
+message MachineStats {
+  // Auxes
+  uint32 auxes = 1;
+
+  // Current position of the axes
+  map<string, float> axes = 2;
+}
+
+message Empty {}

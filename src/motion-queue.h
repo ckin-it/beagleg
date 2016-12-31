@@ -22,6 +22,8 @@
 #include <stdint.h>
 #include "pru-hardware-interface.h"
 #include "container.h"
+#include "fd-mux.h"
+#include <queue>
 
 // Number of motors handled by motion segment.
 // TODO: this and BEAGLEG_NUM_MOTORS should be coming from the same place.
@@ -95,6 +97,9 @@ public:
   // Might change values in MotionSegment.
   virtual void Enqueue(MotionSegment *segment) = 0;
 
+  // Register a Callback to be called when the queue is empty
+  virtual void OnEmptyQueue(const std::function<void()> &callback) = 0;
+
   // Block and wait for queue to be empty.
   virtual void WaitQueueEmpty() = 0;
 
@@ -106,7 +111,14 @@ public:
 
   // Fill the argument with the current absolute position in loops
   // for each motor.
-  virtual void GetMotorsLoops(MotorsRegister *absolute_pos_loops) = 0;
+  virtual void GetMotorsStatus(MotorsRegister *absolute_pos_loops,
+                               unsigned short *aux) = 0;
+
+  // Set the speed factor, > 1 faster, == 1 normal speed, == 0 stop.
+  virtual void SetSpeedFactor(const float factor) = 0;
+
+  // Clear the queues, restart
+  virtual void Reset() = 0;
 };
 
 // Standard implementation.
@@ -119,14 +131,18 @@ struct PRUCommunication;
 struct HistorySegment;
 class PRUMotionQueue : public MotionQueue {
 public:
-  PRUMotionQueue(HardwareMapping *hw, PruHardwareInterface *pru);
+  PRUMotionQueue(HardwareMapping *hw, PruHardwareInterface *pru,
+                 FDMultiplexer *fmux);
   ~PRUMotionQueue();
 
+  void OnEmptyQueue(const std::function<void()> &callback);
   void Enqueue(MotionSegment *segment);
   void WaitQueueEmpty();
   void MotorEnable(bool on);
   void Shutdown(bool flush_queue);
-  void GetMotorsLoops(MotorsRegister *absolute_pos_loops);
+  void GetMotorsStatus(MotorsRegister *absolute_pos_loops, unsigned short *aux);
+  void SetSpeedFactor(const float factor);
+  void Reset();
 
 private:
   bool Init();
@@ -141,6 +157,18 @@ private:
   void RegisterHistorySegment(const MotionSegment &element);
 
   struct HistorySegment *const shadow_queue_;
+
+  FDMultiplexer *const fmux_;
+  void EnqueueInPru(MotionSegment *element);
+  void WakeUpEventHandler();
+  bool EventHandler();
+  void Shovel();
+  bool overflow_;
+  bool handler_is_running_;
+  std::queue<struct MotionSegment> overflow_queue_;
+
+  bool IsQueueEmpty();
+  std::vector<std::function<void()>> on_empty_queue_;
 };
 
 
@@ -148,10 +176,14 @@ private:
 class DummyMotionQueue : public MotionQueue {
 public:
   void Enqueue(MotionSegment *segment) {}
+  void OnEmptyQueue(const std::function<void()> &callback) {}
   void WaitQueueEmpty() {}
   void MotorEnable(bool on) {}
   void Shutdown(bool flush_queue) {}
-  void GetMotorsLoops(MotorsRegister *absolute_pos_loops) {}
+  void GetMotorsStatus(MotorsRegister *absolute_pos_loops,
+                       unsigned short *aux) {}
+  void SetSpeedFactor(const float factor) {}
+  void Reset() {}
 };
 
 #endif  // _BEAGLEG_MOTION_QUEUE_H_

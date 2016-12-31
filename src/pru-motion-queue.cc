@@ -27,8 +27,10 @@
 #include <stdio.h>
 #include <strings.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #include "generic-gpio.h"
+#include "fd-mux.h"
 #include "pwm-timer.h"
 #include "logging.h"
 #include "hardware-mapping.h"
@@ -88,8 +90,13 @@ struct HistorySegment {
   uint32_t fractions[MOTION_MOTOR_COUNT];
   uint32_t cumulative_loops[MOTION_MOTOR_COUNT];
   uint8_t direction_bits;
+  uint16_t aux;
 };
 
+// TODO: Avoid leakeage of context,
+// in RegisterHistorySegment const uint64_t max_fraction = 0xFFFFFFFF;
+// needs to be divided by LOOP_PER_STEP but this is something to be done
+// inside motor operations
 void PRUMotionQueue::RegisterHistorySegment(const MotionSegment &element) {
   const uint64_t max_fraction = 0xFFFFFFFF;
   const unsigned int last_insert_index = (queue_pos_ - 1) % QUEUE_LEN;
@@ -115,13 +122,15 @@ void PRUMotionQueue::RegisterHistorySegment(const MotionSegment &element) {
   }
 
   new_slot->direction_bits = element.direction_bits;
+  new_slot->aux = element.aux;
 }
 
-void PRUMotionQueue::GetMotorsLoops(MotorsRegister *absolute_pos_loops) {
+// TODO: GetMotorsLoops returns Auxes? hmm not very clear
+void PRUMotionQueue::GetMotorsStatus(
+    MotorsRegister *absolute_pos_loops, unsigned short *aux) {
   const uint64_t max_fraction = 0xFFFFFFFF;
   const struct QueueStatus status = *(struct QueueStatus*) &pru_data_->status;
   const struct HistorySegment &current = shadow_queue_[status.index];
-
   const uint64_t counter = status.counter;
   for (int i = 0; i < MOTION_MOTOR_COUNT; ++i) {
     const int64_t sign = (current.direction_bits >> i) & 1 ? -1 : 1;
@@ -130,6 +139,7 @@ void PRUMotionQueue::GetMotorsLoops(MotorsRegister *absolute_pos_loops) {
     loops /= max_fraction;
     (*absolute_pos_loops)[i] = current.cumulative_loops[i] - sign * loops;
   }
+  if (aux != NULL) *aux = current.aux;
 }
 
 // Stop gap for compiler attempting to be overly clever when copying between
@@ -143,36 +153,153 @@ static void unaligned_memcpy(volatile void *dest, const void *src, size_t size) 
   }
 }
 
-void PRUMotionQueue::Enqueue(MotionSegment *element) {
+void PRUMotionQueue::EnqueueInPru(MotionSegment *element) {
   const uint8_t state_to_send = element->state;
   assert(state_to_send != STATE_EMPTY);  // forgot to set proper state ?
   // Initially, we copy everything with 'STATE_EMPTY', then flip the state
   // to avoid a race condition while copying.
   element->state = STATE_EMPTY;
 
-  queue_pos_ %= QUEUE_LEN;
-  while (pru_data_->ring_buffer[queue_pos_].state != STATE_EMPTY) {
-    pru_interface_->WaitEvent();
-  }
-
   volatile MotionSegment *queue_element = &pru_data_->ring_buffer[queue_pos_++];
   unaligned_memcpy(queue_element, element, sizeof(*queue_element));
+
+  queue_pos_ %= QUEUE_LEN;
 
   // Fully initialized. Tell busy-waiting PRU by flipping the state.
   queue_element->state = state_to_send;
 
   // Register the last inserted motion segment in the shadow queue.
   RegisterHistorySegment(*element);
-#ifdef DEBUG_QUEUE
-  DumpMotionSegment(queue_element, pru_data_);
-#endif
+  #ifdef DEBUG_QUEUE
+    DumpMotionSegment(queue_element, pru_data_);
+  #endif
+}
+
+void PRUMotionQueue::Shovel() {
+  // We got the interrupt, let's push all the segments as much as we can
+  while (!overflow_queue_.empty() &&
+         pru_data_->ring_buffer[queue_pos_].state == STATE_EMPTY) {
+    EnqueueInPru(&overflow_queue_.front());
+    overflow_queue_.pop();
+  }
+  if (overflow_queue_.empty()) {
+    overflow_ = false;
+  }
+}
+
+void PRUMotionQueue::Enqueue(MotionSegment *element) {
+  if (overflow_) overflow_queue_.push(*element);
+  else if (pru_data_->ring_buffer[queue_pos_].state != STATE_EMPTY) {
+    // Queue full, push it in the overflow queue, trigger the shovel.
+    overflow_queue_.push(*element);
+    overflow_ = true;
+    WakeUpEventHandler();
+  } else {
+    EnqueueInPru(element);
+  }
+}
+
+void PRUMotionQueue::OnEmptyQueue(const std::function<void()> &callback) {
+  if (IsQueueEmpty()) { return callback(); }
+  on_empty_queue_.push_back(callback);
+  WakeUpEventHandler();
+}
+
+void PRUMotionQueue::WakeUpEventHandler() {
+  if (handler_is_running_) return;
+  fmux_->RunOnReadable(pru_interface_->EventFd(), [this](){
+    return EventHandler();
+  });
+  handler_is_running_ = true;
+}
+
+bool PRUMotionQueue::EventHandler() {
+  int i;
+  read(pru_interface_->EventFd(), &i, 4);
+  pru_interface_->ClearEvent();
+  if (overflow_) Shovel();
+  if (on_empty_queue_.size() > 0 && IsQueueEmpty()){
+    for (const auto &callback : on_empty_queue_) { callback();
+      on_empty_queue_.clear();
+    }
+  }
+  if (!overflow_ && on_empty_queue_.size() == 0) { // Sleep
+    handler_is_running_ = false;
+    return false;
+  }
+  return true;
+}
+
+// Useful for async
+bool PRUMotionQueue::IsQueueEmpty() {
+  if (overflow_) return false; // It must be full
+  const unsigned int last_insert_index = (queue_pos_ - 1) % QUEUE_LEN;
+  return pru_data_->ring_buffer[last_insert_index].state == STATE_EMPTY;
 }
 
 void PRUMotionQueue::WaitQueueEmpty() {
   const unsigned int last_insert_index = (queue_pos_ - 1) % QUEUE_LEN;
-  while (pru_data_->ring_buffer[last_insert_index].state != STATE_EMPTY) {
+  while (overflow_ ||
+         pru_data_->ring_buffer[last_insert_index].state != STATE_EMPTY) {
     pru_interface_->WaitEvent();
   }
+}
+
+void PRUMotionQueue::SetSpeedFactor(const float factor) {
+  assert(factor >= 0);
+  // store factor * (1 << 16) in the pru
+  if (factor == 0) {
+    pru_data_->time_factor = 0xffffffff; // Pause
+    return;
+  }
+  pru_data_->time_factor = (1 / factor) * (1 << 16);
+}
+
+static void clear_std_queue(std::queue<struct MotionSegment> &q) {
+   std::queue<struct MotionSegment> empty;
+   std::swap(q, empty);
+}
+
+void PRUMotionQueue::Reset() {
+  // Better assert that motors are off or that the speed factor is 0
+  for (int i = 0; i < QUEUE_LEN; ++i) {
+    pru_data_->ring_buffer[i].state = STATE_EMPTY;
+  }
+
+  // The previous one in this case will be the last of the queue.
+  // The pru will reset on index 0
+  struct HistorySegment &previous = shadow_queue_[QUEUE_LEN -1];
+
+  // Let's copy the actual number of loops to the *previous*
+  // End
+  const uint64_t max_fraction = 0xFFFFFFFF;
+  const struct QueueStatus status = *(struct QueueStatus*) &pru_data_->status;
+  const struct HistorySegment &current = shadow_queue_[status.index];
+  const uint64_t counter = status.counter;
+
+  // Update QUEUE_LEN - 1 containing the cumulative loops of now
+  for (int i = 0; i < MOTION_MOTOR_COUNT; ++i) {
+    const int64_t sign = (current.direction_bits >> i) & 1 ? -1 : 1;
+    uint64_t loops = current.fractions[i];
+    loops *= counter;
+    loops /= max_fraction;
+    previous.cumulative_loops[i] = current.cumulative_loops[i] - sign * loops;
+  }
+
+  // So that if we trigger GetMotorsStatus we read from the previous slot
+  pru_data_->status.counter = 0;
+  pru_data_->status.index = QUEUE_LEN - 1;
+  // When we restart, the new enqueued slot will pick the cumulative loops
+  // from the QUEUE_LEN - 1
+  queue_pos_ = 0;
+  // Clean the overflow queue
+  clear_std_queue(overflow_queue_);
+  on_empty_queue_.clear();
+  overflow_ = false;
+  handler_is_running_ = false;
+  fmux_->ScheduleDelete(pru_interface_->EventFd());
+  pru_interface_->ResetPru();
+  SetSpeedFactor(1);
 }
 
 void PRUMotionQueue::MotorEnable(bool on) {
@@ -192,10 +319,15 @@ void PRUMotionQueue::Shutdown(bool flush_queue) {
 
 PRUMotionQueue::~PRUMotionQueue() { delete [] shadow_queue_; }
 
-PRUMotionQueue::PRUMotionQueue(HardwareMapping *hw, PruHardwareInterface *pru)
+PRUMotionQueue::PRUMotionQueue(HardwareMapping *hw, PruHardwareInterface *pru,
+                               FDMultiplexer *fmux)
                                : hardware_mapping_(hw),
                                  pru_interface_(pru),
-                                 shadow_queue_(new HistorySegment[QUEUE_LEN]) {
+                                 shadow_queue_(new HistorySegment[QUEUE_LEN]),
+                                 fmux_(fmux),
+                                 overflow_(false),
+                                 handler_is_running_(false),
+                                 overflow_queue_() {
   const bool success = Init();
   // For now, we just assert-fail here, if things fail.
   // Typically hardware-doomed event anyway.

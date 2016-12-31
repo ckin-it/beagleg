@@ -28,6 +28,10 @@
 #include <stdlib.h>
 #include <strings.h>
 
+#include <sys/timerfd.h>
+#include <sys/time.h>
+#include <unistd.h>
+
 #include "motor-interface-constants.h"
 #include "motion-queue.h"
 #include "logging.h"
@@ -150,6 +154,8 @@ void MotionQueueMotorOperations::EnqueueInternal(const LinearSegmentSteps &param
   new_element.aux = param.aux_bits;
   new_element.state = STATE_FILLED;
   backend_->MotorEnable(true);
+  // We were in stop, new stuff, so we are running again
+  if (state_ == STOPPED) state_ = RUNNING;
   backend_->Enqueue(&new_element);
 }
 
@@ -223,4 +229,133 @@ void MotionQueueMotorOperations::MotorEnable(bool on) {
 
 void MotionQueueMotorOperations::WaitQueueEmpty() {
   backend_->WaitQueueEmpty();
+}
+
+static float get_time(struct timeval s_time) {
+  struct timeval t;
+  gettimeofday(&t, 0);
+  long elapsed = (t.tv_sec - s_time.tv_sec) * 1e6f + t.tv_usec - s_time.tv_usec;
+  return elapsed / 1e6f;
+}
+
+
+class SpeedFactorProfiler {
+public:
+  ~SpeedFactorProfiler() {
+    close(timer_);
+  }
+
+  SpeedFactorProfiler(FDMultiplexer *event_server,
+                      State *state,
+                      MotionQueue *backend,
+                      State next_state,
+                      long ns,
+                      float et,
+                      const Callback &callback)
+                      : event_server_(event_server), state_(state),
+                        backend_(backend), next_state_(next_state), ns_(ns),
+                        et_(et), callback_(callback),
+                        final_value_((next_state == RUNNING) ? 1 : 0),
+                        sign_((next_state == RUNNING) ? 1 : -1),
+                        quota_((next_state == RUNNING) ? 0 : 1) {
+    assert(et_ > 0);
+    // Start time
+    gettimeofday(&st_, 0);
+    // RESUME? Enable motors
+    if (next_state_ == RUNNING) backend_->MotorEnable(true);
+    // Create a timer
+    timer_ = timerfd_create(CLOCK_REALTIME, 0);
+    if (timer_ == -1) perror("timerfd_create");
+
+    struct itimerspec timeout = {0};
+    timeout.it_value.tv_nsec = ns_;
+
+    if (timerfd_settime(timer_, 0, &timeout, NULL) == -1)
+      perror("timerfd_settime");
+
+    event_server_->RunOnReadable(timer_, [this](){
+      // Consume the timer
+      read(timer_, NULL, sizeof(uint64_t));
+      return NextFactorValue();
+    });
+  }
+
+  bool NextFactorValue() {
+    const float ct = get_time(st_);
+    if (ct > et_) { // We are done
+      backend_->SetSpeedFactor(final_value_);
+      if (next_state_ == PAUSED) {
+        backend_->MotorEnable(false);
+      } else if (next_state_ == STOPPED ) {
+        backend_->MotorEnable(false);
+        backend_->Reset();
+      }
+      *state_ = next_state_;
+      callback_();
+      delete this;
+      return false;
+    }
+
+    const float factor = quota_ + sign_ * ct / et_;
+    backend_->SetSpeedFactor(factor);
+
+    // Arm it again
+    struct itimerspec timeout = {0};
+    timeout.it_value.tv_nsec = ns_;
+    if (timerfd_settime(timer_, 0, &timeout, NULL) == -1)
+      perror("timerfd_settime");
+    return true;
+  }
+
+private:
+  int timer_;
+  struct timeval st_;
+
+  FDMultiplexer *event_server_;
+  State *const state_;
+  MotionQueue *const backend_;
+  const State next_state_;
+  const long ns_;
+  const float et_;
+  const Callback callback_;
+  const float final_value_;
+  const float sign_;
+  const float quota_;
+};
+
+void MotionQueueMotorOperations::RunAsyncStop(FDMultiplexer *event_server,
+                                              const Callback &callback) {
+  if (state_ == STOPPED) return;
+  else if (state_ == PAUSED) backend_->Reset();
+  new SpeedFactorProfiler(event_server, &state_, backend_, STOPPED, 1e5, 0.1,
+                          callback);
+}
+
+void MotionQueueMotorOperations::RunAsyncPause(FDMultiplexer *event_server) {
+  if (state_ == STOPPED || state_ == PAUSED) return;
+  new SpeedFactorProfiler(event_server, &state_, backend_, PAUSED, 1e5, 0.1,
+                          [](){});
+}
+
+void MotionQueueMotorOperations::RunAsyncResume(FDMultiplexer *event_server) {
+  if (state_ != PAUSED) return;
+  new SpeedFactorProfiler(event_server, &state_, backend_, RUNNING, 1e5, 0.1,
+                          [](){});
+}
+
+void MotionQueueMotorOperations::GetRealtimeStatus(
+    int pos_steps[BEAGLEG_NUM_MOTORS], unsigned short *aux_status) {
+  MotorsRegister steps;
+  backend_->GetMotorsStatus(&steps, aux_status);
+  for (int i = 0; i < MOTION_MOTOR_COUNT; ++i) {
+    // We are not actually retrieving loops, but loops * 2
+    // that's due to the max_fraction in pru-motion-queue which is not
+    // 0xFFFFFFFF / LOOPS_PER_STEP
+    // pos_steps[i] = steps[i] / LOOPS_PER_STEP; // Convert into steps
+    pos_steps[i] = steps[i];
+  }
+}
+
+void MotionQueueMotorOperations::RunOnEmptyQueue(const Callback &callback) {
+  backend_->OnEmptyQueue(callback);
 }

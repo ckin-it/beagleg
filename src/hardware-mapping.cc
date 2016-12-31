@@ -97,6 +97,23 @@ bool HardwareMapping::AddMotorMapping(LogicAxis axis, int motor,
   return true;
 }
 
+void HardwareMapping::AssignMotorsStepsToAxis(int target[GCODE_NUM_AXES],
+                                             int source[NUM_MOTORS]) {
+  int m = 0;
+  for (GCodeParserAxis axis : AllAxes()) {
+    uint8_t mask = axis_to_driver_[axis];
+    m = 0;
+    while (((mask & 0x01) != 0x01) && m < NUM_MOTORS) {
+      // while the first bit is not 1, iterate.
+      mask = mask >> 1;
+      m++;
+    }
+    // Maybe this axis is not mapped to any motor
+    if (m < NUM_MOTORS) target[axis] = source[m];
+    else target[axis] = 0;
+  }
+}
+
 int HardwareMapping::GetFirstFreeMotor() {
   for (int motor = 0; motor < NUM_MOTORS; ++motor) {
     if (driver_flip_[motor] == 0)

@@ -37,11 +37,14 @@
 #include <strings.h>
 #include <sys/select.h>
 #include <sys/types.h>
+#include <sys/timerfd.h>
+#include <sys/eventfd.h>
 #include <unistd.h>
 
 #include "logging.h"
 #include "string-util.h"
 #include "simple-lexer.h"
+#include "linebuf-reader.h"
 
 const AxisBitmap_t kAllAxesBitmap =
   ((1 << AXIS_X) | (1 << AXIS_Y) | (1 << AXIS_Z)| (1 << AXIS_E)
@@ -91,6 +94,11 @@ public:
        GCodeParser::EventReceiver *parse_events, bool allow_m111);
   ~Impl();
 
+  void EnableAsyncStream();
+  void DisableAsyncStream(const bool flush);
+  void UpdateMachinePosition(const AxesRegister &new_pos);
+  void StartAsyncStream(GCodeParser *owner, int connection,
+                        FDMultiplexer *event_server, FILE *err_stream);
   void ParseLine(GCodeParser *owner, const char *line, FILE *err_stream);
   int ParseStream(GCodeParser *owner, int input_fd, FILE *err_stream);
   const char *gcodep_parse_pair_with_linenumber(int line_num,
@@ -99,7 +107,7 @@ public:
                                                 float *value,
                                                 FILE *err_stream);
   int error_count() const { return error_count_; }
-
+  bool IsRunning();
 private:
   enum DebugLevel {
     DEBUG_NONE        = 0,
@@ -341,8 +349,6 @@ private:
   AxesRegister last_spline_cp2_;
   bool have_first_spline_;
 
-  GCodeParser *while_owner_;
-  FILE *while_err_stream_;
   bool do_while_;
   std::string while_condition_;
   std::string while_loop_;
@@ -353,6 +359,24 @@ private:
   // TODO(hzeller): right now, we hook the error count to the gprintf(), but
   // maybe this needs to be more explicit.
   int error_count_;
+
+  bool ParseBufferedLines();
+  bool ConsumeLineBuffer();
+  bool CloseAsyncConnection();
+
+  // ASYNC
+  struct itimerspec timeout_;
+  int already_running_;
+  int connection_;
+  int event_fd_;
+  bool async_stream_is_disabled_;
+  FILE * err_stream_;
+  GCodeParser *owner_;
+  LinebufReader reader_;
+  FDMultiplexer *event_server_;
+
+  // Timer used to decide if the input is idle or not
+  int timer_;
 };
 
 AxesRegister GCodeParser::Impl::kZeroOffset;
@@ -375,8 +399,12 @@ GCodeParser::Impl::Impl(const GCodeParser::Config &parse_config,
     home_position_(config.machine_origin),
     current_origin_(&home_position_), current_global_offset_(&kZeroOffset),
     arc_normal_(AXIS_Z),
-    while_err_stream_(NULL), do_while_(false),
-    debug_level_(DEBUG_NONE), allow_m111_(allow_m111), error_count_(0)
+    do_while_(false), debug_level_(DEBUG_NONE),
+    allow_m111_(allow_m111), error_count_(0),
+    already_running_(false), connection_(-1), event_fd_(-1),
+    async_stream_is_disabled_(true),
+    err_stream_(NULL), owner_(NULL),
+    reader_()
 {
   assert(callbacks);  // otherwise, this is not very useful.
   reset_G92();
@@ -1089,8 +1117,8 @@ void GCodeParser::Impl::gcodep_while_end() {
       if (control_parse_.ExpectNext(&line, CK_DO)) {
         std::vector<StringPiece> piece = SplitString(while_loop_, "\n");
         for (size_t i=0; i < piece.size(); i++)
-          ParseLine(while_owner_, piece[i].ToString().c_str(),
-                    while_err_stream_);
+          ParseLine(owner_, piece[i].ToString().c_str(),
+                    err_stream_);
       } else {
         gprintf(GLOG_SYNTAX_ERR, "expected DO got '%s'\n", line);
         return;
@@ -1743,9 +1771,8 @@ const char *GCodeParser::Impl::handle_M111(const char *line) {
 // Note: changes here should be documented in G-code.md as well.
 void GCodeParser::Impl::ParseLine(GCodeParser *owner,
                                   const char *line, FILE *err_stream) {
-  if (debug_level_ & DEBUG_PARSER) {
+  if (debug_level_ & DEBUG_PARSER)
     Log_debug("GCodeParser| %s", line);
-  }
 
   ++line_number_;
   err_msg_ = err_stream;  // remember as 'instance' variable.
@@ -1889,6 +1916,181 @@ static void disarm_signal_handler() {
   signal(SIGFPE, SIG_DFL);
 }
 
+bool GCodeParser::Impl::IsRunning() {
+  return already_running_;
+}
+
+// Takes care of consuming any missing line in the reader_
+// before scheduling the reader attached to the connection_ fd
+// NOTE: This is meant to be run with the event_fd_ fd
+bool GCodeParser::Impl::ConsumeLineBuffer() {
+  if (async_stream_is_disabled_) return false;
+  // Just read lines, if you update you may block
+  const char *line = reader_.ReadLine();
+  if (line == NULL) {
+    // Not enough chars, let's move back to the connection_ fd
+    // Schedule the line parser
+    event_server_->RunOnReadable(connection_, [this](){
+      return ParseBufferedLines();
+    });
+
+    // start the input idle timer
+    event_server_->RunOnReadable(timer_, [this](){
+      read(timer_, NULL, sizeof(uint64_t));
+      if (async_stream_is_disabled_) return false;
+      callbacks->input_idle(true);
+      return true;
+    });
+
+    // schedule that if we don't receive gcode whithin a bunch of ms
+    // declare input idle
+    // NOTE: Imagine that we just woke up and there are remaining lines
+    // but we are not declaring the input idle. and connection_ blocks()
+    // we would enqueue gcode without enqueuing the final motor stop.
+    timeout_ = {0};
+    timeout_.it_value.tv_nsec = 1e7;
+    if (timerfd_settime(timer_, 0, &timeout_, NULL) == -1)
+      Log_error("timerfd_settime");
+
+    // Die
+    return false;
+  }
+
+  // Parse the line
+  ParseLine(owner_, line, err_stream_);
+  return true;
+}
+
+// NOTE: This is meant to be run with the connection_ fd
+bool GCodeParser::Impl::ParseBufferedLines() {
+  if (async_stream_is_disabled_) return false;
+  if (reader_.Update(connection_) == 0) {
+    // Closing the connection
+    callbacks->gcode_finished(true);
+    return CloseAsyncConnection();
+    Log_info("Client disconnected.");
+  }
+
+  // We always need (if we can) to parse at least one line
+  const char *line = reader_.ReadLine();
+  if (line == NULL) {
+    // Not enough chars, let's loop again
+    return true;
+  }
+
+  // NOTE:(important)
+  // This should return true or false in case the line was movimentation or not
+  // and only if is, reset the timer.
+  ParseLine(owner_, line, err_stream_);
+
+  if (timerfd_settime(timer_, 0, &timeout_, NULL) == -1)
+    Log_error("timerfd_settime");
+
+  // If if thas multiple lines schedule the ConsumeLineBuffer
+  if (reader_.HasMoreLines()) {
+    // Spawn the ConsumeLineBuffer
+    event_server_->RunOnReadable(event_fd_, [this](){
+      return ConsumeLineBuffer();
+    });
+
+    // Delete the current timer
+    event_server_->ScheduleDelete(timer_);
+
+    // Die
+    return false;
+  } else {
+    // Reset the input_idle timer
+    timeout_ = {0};
+    timeout_.it_value.tv_nsec = 1e7;
+  }
+
+  return true;
+}
+
+bool GCodeParser::Impl::CloseAsyncConnection() {
+  disarm_signal_handler();
+  if (err_stream_) {
+    fflush(err_stream_);
+  }
+
+  // always call gcode_finished() to disable motors at end of stream
+  callbacks->gcode_finished(true);
+  DisableAsyncStream(false);
+  close(event_fd_);
+  close(connection_);
+  close(timer_);
+  Log_info("Connection closed.\n");
+  already_running_ = false;
+  return false;
+}
+
+void GCodeParser::Impl::StartAsyncStream(GCodeParser *owner,
+                                         int connection,
+                                         FDMultiplexer *event_server,
+                                         FILE *err_stream) {
+  assert(!already_running_);
+  assert(async_stream_is_disabled_);
+  already_running_ = true;
+  owner_ = owner;
+  err_stream_ = err_stream;
+  connection_ = connection;
+  event_server_ = event_server;
+  event_fd_ = eventfd(1, 0);
+  if (event_fd_ < 0)
+    perror("eventfd()");
+
+  if (err_stream) {
+    // Output needs to be unbuffered, otherwise they'll never make it.
+    setvbuf(err_stream, NULL, _IONBF, 0);
+  }
+
+  // TODO: remember to return 2 to machine-control
+  // or send the proper message in case SIGINT or SIGKILL is pressed.
+  arm_signal_handler();
+
+  // This timer takes care of sending an input idle if we d
+  timer_ = timerfd_create(CLOCK_REALTIME, 0);
+  if (timer_ == -1)
+    perror("timerfd_create()");
+
+  EnableAsyncStream();
+  Log_info("Started Async Stream");
+}
+
+void GCodeParser::Impl::EnableAsyncStream() {
+  if (!async_stream_is_disabled_) return; // Already running
+  async_stream_is_disabled_ = false;
+
+  // The ParseBufferedLines will start after we are sure ther is no
+  // remaining line in the reader_
+  event_server_->RunOnReadable(event_fd_, [this](){
+    return ConsumeLineBuffer();
+  });
+}
+
+static void flush_fd(int fd) {
+  int ret;
+  while(ret != 0) {
+    ret = read(fd, NULL, 2048);
+  }
+}
+
+void GCodeParser::Impl::DisableAsyncStream(const bool flush) {
+  if (async_stream_is_disabled_) return;
+  async_stream_is_disabled_ = true;
+  event_server_->ScheduleDelete(event_fd_);
+  event_server_->ScheduleDelete(connection_);
+  event_server_->ScheduleDelete(timer_);
+  if (flush) {
+    flush_fd(connection_);
+    reader_.Flush();
+  }
+}
+
+void GCodeParser::Impl::UpdateMachinePosition(const AxesRegister &new_pos) {
+  axes_pos_ = new_pos;
+}
+
 // Public facade function.
 int GCodeParser::Impl::ParseStream(GCodeParser *owner,
                                    int input_fd, FILE *err_stream) {
@@ -1911,8 +2113,8 @@ int GCodeParser::Impl::ParseStream(GCodeParser *owner,
   wait_time.tv_usec = 50 * 1000;
   FD_ZERO(&read_fds);
 
-  while_owner_ = owner;
-  while_err_stream_ = err_stream;
+  owner_ = owner;
+  err_stream_ = err_stream;
 
   arm_signal_handler();
   char buffer[8192];
@@ -1978,4 +2180,24 @@ const char *GCodeParser::ParsePair(const char *line,
                                    FILE *err_stream) {
   return impl_->gcodep_parse_pair_with_linenumber(-1, line, letter, value,
                                                   err_stream);
+}
+
+bool GCodeParser::already_running() {
+  return impl_->IsRunning();
+}
+void GCodeParser::StartAsyncStream(int connection, FDMultiplexer *event_server,
+                                   FILE *err_stream) {
+  return impl_->StartAsyncStream(this, connection, event_server, err_stream);
+}
+
+void GCodeParser::EnableAsyncStream() {
+  return impl_->EnableAsyncStream();
+}
+
+void GCodeParser::DisableAsyncStream(const bool flush) {
+  return impl_->DisableAsyncStream(flush);
+}
+
+void GCodeParser::UpdateMachinePosition(const AxesRegister &new_pos) {
+  return impl_->UpdateMachinePosition(new_pos);
 }

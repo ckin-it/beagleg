@@ -36,16 +36,18 @@
 #include <unistd.h>
 
 #include "config-parser.h"
+#include "fd-mux.h"
 #include "gcode-machine-control.h"
 #include "gcode-parser.h"
 #include "hardware-mapping.h"
 #include "logging.h"
-#include "pru-hardware-interface.h"
 #include "motion-queue.h"
 #include "motor-operations.h"
-#include "spindle-control.h"
+#include "pru-hardware-interface.h"
 #include "sim-firmware.h"
+#include "spindle-control.h"
 #include "string-util.h"
+#include "grpc-control-server.h"
 
 static int usage(const char *prog, const char *msg) {
   if (msg) {
@@ -178,7 +180,7 @@ static void eatsignal(int sig) {}
 // Only one connection can be active at a time.
 // Socket must already be opened by open_server(). "bind_addr" and "port"
 // are just FYI information for nicer log-messages.
-static int run_server(int listen_socket,
+static int run_server(int listen_socket, FDMultiplexer *event_server,
                       GCodeMachineControl *machine, GCodeParser *parser,
                       const char *bind_addr, int port) {
   signal(SIGPIPE, SIG_IGN);  // Pesky clients, closing connections...
@@ -191,41 +193,44 @@ static int run_server(int listen_socket,
   Log_info("Ready to accept GCode-connections on %s:%d",
            bind_addr ? bind_addr : "0.0.0.0", port);
 
-  int process_result;
-  do {
-    struct sockaddr_in client;
-    socklen_t socklen = sizeof(client);
-    struct sigaction sa = {};
-    sa.sa_handler = eatsignal;
-    sa.sa_flags = SA_RESETHAND | SA_NODEFER;  // oneshot, no restart
-    sigaction(SIGINT, &sa, NULL);
-    sigaction(SIGTERM, &sa, NULL);
-    int connection = accept(listen_socket, (struct sockaddr*) &client, &socklen);
-    if (connection < 0) {
-      Log_error("accept(): %s", strerror(errno));
-      return (errno == EINTR) ? 2 : 1;
-    }
-    sa.sa_handler = SIG_DFL;
-    sigaction(SIGINT, &sa, NULL);
-    sigaction(SIGTERM, &sa, NULL);
+  event_server->RunOnReadable(listen_socket,
+                              [listen_socket,event_server,machine,parser]() {
+      struct sockaddr_in client;
+      socklen_t socklen = sizeof(client);
+      struct sigaction sa = {};
+      sa.sa_handler = eatsignal;
+      sa.sa_flags = SA_RESETHAND | SA_NODEFER;  // oneshot, no restart
+      sigaction(SIGINT, &sa, NULL);
+      sigaction(SIGTERM, &sa, NULL);
+      int connection = accept(listen_socket, (struct sockaddr*) &client, &socklen);
+      if (connection < 0) {
+        Log_error("accept(): %s", strerror(errno));
+        return true;
+      }
+      if (parser->already_running()) {
+        // For now, only one. Though we could have multiple.
+        dprintf(connection, "// Sorry, can only handle one connection at a time."
+                "There is only one machine after all.\n");
+        close(connection);
+        return true;
+      }
+      sa.sa_handler = SIG_DFL;
+      sigaction(SIGINT, &sa, NULL);
+      sigaction(SIGTERM, &sa, NULL);
 
-    char ip_buffer[INET_ADDRSTRLEN];
-    const char *print_ip = inet_ntop(AF_INET, &client.sin_addr,
-                                     ip_buffer, sizeof(ip_buffer));
-    Log_info("Accepting new connection from %s\n", print_ip);
-    FILE *msg_stream = fdopen(connection, "w");
-    machine->SetMsgOut(msg_stream);
-    process_result = parser->ParseStream(connection, msg_stream);
+      char ip_buffer[INET_ADDRSTRLEN];
+      const char *print_ip = inet_ntop(AF_INET, &client.sin_addr,
+                                       ip_buffer, sizeof(ip_buffer));
+      Log_info("Accepting new connection from %s\n", print_ip);
 
-    fclose(msg_stream);
-    Log_info("Connection to %s closed.\n", print_ip);
-  } while (process_result == 0);
+      FILE *msg_stream = fdopen(connection, "w");
+      machine->SetMsgOut(msg_stream);
+      parser->StartAsyncStream(connection, event_server, msg_stream);
 
-  close(listen_socket);
-  Log_error("Error gcode_machine_control_from_stream() == %d. Exiting\n",
-            process_result);
+      return true;
+    });
 
-  return process_result;
+  return 0;
 }
 
 int main(int argc, char *argv[]) {
@@ -417,6 +422,7 @@ int main(int argc, char *argv[]) {
     Log_error("Can't become daemon: %s", strerror(errno));
   }
 
+  FDMultiplexer event_server;
   // Open socket early, so that we
   //  (a) can bail out early before messing with GPIO/PRU settings if
   //      someone is alrady listening (starting as daemon twice?).
@@ -448,7 +454,8 @@ int main(int argc, char *argv[]) {
       return 1;
     }
     pru_hw_interface = new UioPrussInterface();
-    motion_backend = new PRUMotionQueue(&hardware_mapping, pru_hw_interface);
+    motion_backend = new PRUMotionQueue(&hardware_mapping, pru_hw_interface,
+                                        &event_server);
   }
 
   // Listen port bound, GPIO initialized. Ready to drop privileges.
@@ -467,6 +474,7 @@ int main(int argc, char *argv[]) {
   GCodeMachineControl *machine_control
     = GCodeMachineControl::Create(config, &motor_operations,
                                   &hardware_mapping, &spindle,
+                                  &event_server,
                                   stderr);
   if (machine_control == NULL) {
     Log_error("Exiting. Cannot initialize machine control.");
@@ -488,10 +496,24 @@ int main(int argc, char *argv[]) {
     ret = send_file_to_machine(machine_control, parser,
                                filename, file_loop_count);
   } else {
-    ret = run_server(listen_socket, machine_control, parser,
+    ret = run_server(listen_socket, &event_server, machine_control, parser,
                      bind_addr, listen_port);
   }
 
+  GrpcControlServer control_server(machine_control, &event_server);
+  control_server.Run();
+  // Add the shovel, grpc, etc..
+  // Instantiate the shovel and pass it to the motion-queue instance
+  // the second queue is inside the motion-queue
+  // add the shovel to the muxer
+  // The motion queue, will enable() disable() the shovel whenever
+  // there's something inside the host queue.
+  event_server.Loop();
+
+  if (listen_socket >= 0) {
+    close(listen_socket);
+    Log_error("Exiting server");
+  }
   delete parser;
   delete machine_control;
 

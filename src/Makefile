@@ -54,6 +54,11 @@ export CXX?=g++
 LDFLAGS+=-lpthread -lm
 PRUSS_LIBS=$(LIBDIR_APP_LOADER)/libprussdrv.a
 
+# Grpc stuff
+LDFLAGS+= -L/usr/local/lib `pkg-config --libs grpc++ grpc`       \
+           -Wl,--no-as-needed -lgrpc++_reflection -Wl,--as-needed \
+           -lprotobuf -lpthread -ldl
+
 # Assembled binary from *.p file.
 PRU_BIN=motor-interface-pru_bin.h
 
@@ -61,17 +66,20 @@ GCODE_OBJECTS=gcode-parser.o gcode-machine-control.o determine-print-stats.o \
               generic-gpio.o arc-gen.o pwm-timer.o logging.o config-parser.o \
 	      string-util.o machine-control-config.o hardware-mapping.o \
 	      spindle-control.o planner.o simple-lexer.o adc.o \
-	      gcode-parser-config.o
+	      gcode-parser-config.o fd-mux.o linebuf-reader.o \
+	      grpc-control-server.o control-interface.grpc.pb.o \
+				control-interface.pb.o
+
 OBJECTS=motor-operations.o sim-firmware.o pru-motion-queue.o uio-pruss-interface.o $(GCODE_OBJECTS)
 MAIN_OBJECTS=machine-control.o gcode-print-stats.o gcode2ps.o
 TEST_FRAMEWORK_OBJECTS=gtest-all.o gmock-all.o
 
 TARGETS=../machine-control ../gcode-print-stats gcode2ps
-UNITTEST_BINARIES=gcode-machine-control_test gcode-parser_test config-parser_test string-util_test machine-control-config_test arc-gen_test planner_test simple-lexer_test pru-motion-queue_test
+UNITTEST_BINARIES=gcode-machine-control_test gcode-parser_test config-parser_test string-util_test machine-control-config_test arc-gen_test planner_test simple-lexer_test pru-motion-queue_test linebuf-reader_test
 
 DEPENDENCY_RULES=$(OBJECTS:=.d) $(UNITTEST_BINARIES:=.o.d) $(MAIN_OBJECTS:=.d)
 
-all : $(TARGETS)
+all : $(TARGETS) protos
 
 ../gcode-print-stats: gcode-print-stats.o $(GCODE_OBJECTS)
 	$(CROSS_COMPILE)$(CXX) -o $@ $^ $(LDFLAGS)
@@ -89,6 +97,9 @@ test-html: test-out/test.html
 test-out/test.html: gcode2ps test-create-html.sh testdata/*.gcode
 	./test-create-html.sh testdata/*.gcode
 
+protos: control-interface.pb.cc control-interface.pb.h \
+	control-interface.grpc.pb.cc control-interface.grpc.pb.h
+
 pause-client: pause-client.o $(PRUSS_LIBS)
 	$(CROSS_COMPILE)$(CXX) $(CFLAGS) -o $@ $^ $(PRUSS_LIBS) $(LDFLAGS)
 
@@ -101,6 +112,9 @@ valgrind-test: $(UNITTEST_BINARIES)
 $(PRU_BIN) : motor-interface-constants.h \
              $(CAPE_INCLUDE)/beagleg-pin-mapping.h \
 	     $(CAPE_INCLUDE)/pru-io-routines.hp
+
+%.pb.cc %.pb.h %.grpc.pb.cc %.grpc.pb.h: %.proto
+	protoc --cpp_out=. --grpc_out=. --plugin=protoc-gen-grpc=`which grpc_cpp_plugin` $<
 
 %_test: %_test.o $(OBJECTS) $(TEST_FRAMEWORK_OBJECTS) compiler-flags
 	$(CROSS_COMPILE)$(CXX) -o $@ $< $(OBJECTS) $(PRUSS_LIBS) $(LDFLAGS) $(TEST_FRAMEWORK_OBJECTS)

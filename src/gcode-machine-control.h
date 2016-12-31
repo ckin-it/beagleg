@@ -76,6 +76,7 @@ class GCodeMachineControl {
                                      MotorOperations *motor_backend,
                                      HardwareMapping *hardware_mapping,
                                      Spindle *spindle,
+                                     FDMultiplexer *event_server,
                                      FILE *msg_stream);
 
   ~GCodeMachineControl();
@@ -87,6 +88,11 @@ class GCodeMachineControl {
   // on the position of the endstops configured for homing.
   // return in *pos register.
   void GetHomePos(AxesRegister *pos);
+
+  void GetRealtimeStatus(AxesRegister *current_pos, unsigned short *aux_bits);
+  void Stop();
+  void Pause();
+  void Resume();
 
   // Return the receiver for parse events. The caller must not assume ownership
   // of the returned pointer.

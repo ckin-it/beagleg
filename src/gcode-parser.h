@@ -34,6 +34,7 @@
 #include <map>
 
 #include "container.h"
+#include "fd-mux.h"
 
 // Axis supported by this parser.
 enum GCodeParserAxis {
@@ -209,6 +210,28 @@ public:
   // If "err_stream" is non-NULL, sends error messages that way.
   void ParseLine(const char *line, FILE *err_stream);
 
+  // TODO: grpc stream will directly read from gcode parser
+  // instead, for sending command you will use an fd from a pipe() as mean
+  // between grpc thread and the muxer
+  void EnableAsyncStream();
+  void DisableAsyncStream(const bool flush);
+
+  // Used from the stop to update the current machine position
+  // in order to handle new gcode.
+  void UpdateMachinePosition(const AxesRegister &new_pos);
+
+  // TODO: this needs to get an fd-multiplexer and needs to register a
+  // callback for whenever there is something new.
+
+  // TODO: also - the fdmultiplexer needs to have a way to register a regular
+  // callback, so that we can simulate the idle call.
+
+  // Accept an incoming connection and registers an async stream handler
+  // in the event server
+  void StartAsyncStream(int connection, FDMultiplexer *event_server,
+                        FILE *err_stream);
+
+  // THIS BLOCKS IT NEEDS TO BE REPLACED WITH A THING THAT REGISTERS A CALLBACK
   // Read and parse GCode from "input_fd" and call callbacks.
   // Error messages are sent to "err_stream" if non-NULL.
   // Reads until EOF (returns 0) or signal occured (returns 2).
@@ -237,6 +260,9 @@ public:
 
   // Number of errors seen.
   int error_count() const;
+
+  // Tells if there's already an associated connection with the parser.
+  bool already_running();
 
 private:
   class Impl;

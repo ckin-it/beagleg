@@ -38,4 +38,9 @@
 #define IN_1_GPIO          PIN_P8_16  // END_X
 #define IN_2_GPIO          PIN_P9_41  // END_Y
 #define IN_3_GPIO          PIN_P9_27  // END_Z
-#define IN_4_GPIO          PIN_P8_16  // END_A
+#define IN_4_GPIO          PIN_P8_41  // END_A
+
+#define AUX_1_GPIO         PIN_P8_8  // RELIEF 1
+#define AUX_2_GPIO         PIN_P8_9  // MATERIAL 1
+#define AUX_3_GPIO         PIN_P8_10 // RELIEF 2
+#define AUX_4_GPIO         PIN_P8_13 // MATERIAL 2

@@ -128,18 +128,16 @@ static bool drop_privileges(StringPiece privs) {
 
 // Reads the given "gcode_filename" with GCode and operates machine with it.
 // If "loop_count" is >= 0, repeats this number after the first execution.
-static int send_file_to_machine(GCodeMachineControl *machine,
+static int send_file_to_machine(FDMultiplexer *event_server,
+                                GCodeMachineControl *machine,
                                 GCodeParser *parser,
                                 const char *gcode_filename, int loop_count) {
-  int ret;
   machine->SetMsgOut(stderr);
   while (loop_count < 0 || loop_count-- > 0) {
     int fd = open(gcode_filename, O_RDONLY);
-    ret = parser->ParseStream(fd, stderr);
-    if (ret != 0)
-      break;
+    parser->StartAsyncStream(fd, event_server, stderr);
   }
-  return ret;
+  return 0;
 }
 
 // Open server. Return file-descriptor or -1 if listen fails.
@@ -493,7 +491,7 @@ int main(int argc, char *argv[]) {
   int ret = 0;
   if (has_filename) {
     const char *filename = argv[optind];
-    ret = send_file_to_machine(machine_control, parser,
+    ret = send_file_to_machine(&event_server, machine_control, parser,
                                filename, file_loop_count);
   } else {
     ret = run_server(listen_socket, &event_server, machine_control, parser,

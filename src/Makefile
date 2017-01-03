@@ -66,7 +66,7 @@ GCODE_OBJECTS=gcode-parser.o gcode-machine-control.o determine-print-stats.o \
               generic-gpio.o arc-gen.o pwm-timer.o logging.o config-parser.o \
 	      string-util.o machine-control-config.o hardware-mapping.o \
 	      spindle-control.o planner.o simple-lexer.o adc.o \
-	      gcode-parser-config.o fd-mux.o linebuf-reader.o \
+	      gcode-parser-config.o fd-mux.o linebuf-reader.o struct-buffer.o \
 	      grpc-control-server.o control-interface.grpc.pb.o \
 				control-interface.pb.o
 

@@ -23,6 +23,7 @@
 #include <thread>
 #include <sys/timerfd.h>
 #include <stdint.h>
+#include <cstdint>
 
 #include <grpc++/grpc++.h>
 #include "control-interface.grpc.pb.h"
@@ -32,6 +33,7 @@
 #include "grpc-control-server.h"
 #include "fd-mux.h"
 #include "logging.h"
+#include "struct-buffer.h"
 
 using grpc::Server;
 using grpc::ServerBuilder;
@@ -50,7 +52,8 @@ typedef struct {
   uint16_t aux;
 } DataStream;
 
-typedef enum commands {
+// Unsigned char in order to avoid truncations any truncation issue during write
+typedef enum commands: uint8_t {
   STOP,
   PAUSE,
   RESUME
@@ -58,7 +61,8 @@ typedef enum commands {
 
 class BeagleGControlsServiceImpl final : public BeagleGControls::Service {
 public:
-  BeagleGControlsServiceImpl(int command_pipe_fd[2], int stream_pipe_fd[2]) {
+  BeagleGControlsServiceImpl(int command_pipe_fd[2], int stream_pipe_fd[2])
+                             : struct_reader_(sizeof(DataStream)){
     command_pipe_fd_[0] = command_pipe_fd[0]; // Reader
     command_pipe_fd_[1] = command_pipe_fd[1]; // Writer
 
@@ -87,29 +91,38 @@ public:
     return Status::OK;
   }
 
+  // We cannot handle just one client for now, for multiple clients
+  // will be undefined behavior
   Status MachineStatus(ServerContext *context, const Empty *request,
                        ServerWriter<MachineStats> *reply) override {
     // Get the position
-    DataStream data;
+    std::lock_guard<std::mutex> guard(stream_mutex_);
+    DataStream *data;
+    void *ret;
     MachineStats payload;
     auto map = payload.mutable_axes();
     std::string name;
     for (;;) {
-      if (read(stream_pipe_fd_[0], &data, sizeof(data)) < 0)
-        perror("stream read pipe()");
+      struct_reader_.Update(stream_pipe_fd_[0]);
+      ret = struct_reader_.Read();
+      if (ret == NULL) continue;
+      while(ret != NULL) {
+        data = (DataStream *) ret;
+        ret = struct_reader_.Read();
+      }
 
-      name = 'X'; (*map)[name] = data.axis_pos[0];
-      name = 'Y'; (*map)[name] = data.axis_pos[1];
-      name = 'Z'; (*map)[name] = data.axis_pos[2];
-      name = 'E'; (*map)[name] = data.axis_pos[3];
-      name = 'A'; (*map)[name] = data.axis_pos[4];
-      name = 'B'; (*map)[name] = data.axis_pos[5];
-      name = 'C'; (*map)[name] = data.axis_pos[6];
-      name = 'U'; (*map)[name] = data.axis_pos[7];
-      name = 'V'; (*map)[name] = data.axis_pos[8];
-      name = 'W'; (*map)[name] = data.axis_pos[9];
+      name = 'X'; (*map)[name] = data->axis_pos[0];
+      name = 'Y'; (*map)[name] = data->axis_pos[1];
+      name = 'Z'; (*map)[name] = data->axis_pos[2];
+      name = 'E'; (*map)[name] = data->axis_pos[3];
+      name = 'A'; (*map)[name] = data->axis_pos[4];
+      name = 'B'; (*map)[name] = data->axis_pos[5];
+      name = 'C'; (*map)[name] = data->axis_pos[6];
+      name = 'U'; (*map)[name] = data->axis_pos[7];
+      name = 'V'; (*map)[name] = data->axis_pos[8];
+      name = 'W'; (*map)[name] = data->axis_pos[9];
 
-      payload.set_auxes(data.aux);
+      payload.set_auxes(data->aux);
 
       reply->Write(payload);
     }
@@ -124,16 +137,19 @@ private:
   }
 
   std::mutex write_mutex_;
+  std::mutex stream_mutex_;
 
   int command_pipe_fd_[2];
   int stream_pipe_fd_[2];
+  StructbufReader struct_reader_;
 
 };
 
 class GrpcControlServer::Impl {
 public:
   Impl(GCodeMachineControl *machine, FDMultiplexer *event_server)
-       : machine_(machine), event_server_(event_server) {}
+       : machine_(machine), event_server_(event_server),
+         struct_writer_(sizeof(DataStream)), data_{0} {}
   void Run();
 
 private:
@@ -142,6 +158,9 @@ private:
 
   int command_pipe_fd_[2];
   int stream_pipe_fd_[2];
+  StructbufWriter struct_writer_;
+  DataStream data_;
+
   int timer_;
   std::thread *grpc_wait_;
   std::unique_ptr<Server> server_;
@@ -173,7 +192,7 @@ void GrpcControlServer::Impl::Run() {
     builder.RegisterService(&service);
     // Finally assemble the server.
     server_ = builder.BuildAndStart();
-    Log_debug("Started the control server on %s", server_address.c_str());
+    Log_info("Started the control server on %s", server_address.c_str());
 
     server_->Wait();
   });
@@ -187,27 +206,28 @@ void GrpcControlServer::Impl::Run() {
   if (timerfd_settime(timer_, 0, &timeout, NULL) == -1)
     perror("timerfd_settime");
 
+  // This async tasks update the datastream
   event_server_->RunOnReadable(timer_, [this](){
     return StatusStreamer();
   });
+
 }
 
 bool GrpcControlServer::Impl::StatusStreamer() {
   AxesRegister axes_pos;
-  static DataStream data;
-  machine_->GetRealtimeStatus(&axes_pos, &data.aux);
-
-
+  machine_->GetRealtimeStatus(&axes_pos, &data_.aux);
   for (const GCodeParserAxis axis : AllAxes()) {
-    data.axis_pos[axis] = axes_pos[axis];
+    data_.axis_pos[axis] = axes_pos[axis];
   }
 
-  if (write(stream_pipe_fd_[1], &data, sizeof(data)) < 0)
-    perror("pipe write()");
+  // this handles the writes on the pipe
+  event_server_->RunOnWritable(stream_pipe_fd_[1], [this]() {
+    struct_writer_.Update(stream_pipe_fd_[1], (void *) &data_);
+    return false;
+  });
 
   struct itimerspec timeout = {0};
   timeout.it_value.tv_nsec = 1e8;
-
   if (timerfd_settime(timer_, 0, &timeout, NULL) == -1)
     perror("timerfd_settime");
 

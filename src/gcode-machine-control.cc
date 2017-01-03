@@ -840,7 +840,7 @@ void GCodeMachineControl::Impl::HandleStop() {
   // Disable new parsing (true stays for flush or not)
   // We will reset the queue asyncronously, let's block the comunication
   // and discard everything already enqueued.
-
+  Log_debug("Stopping");
   // Nothing has been parsed yet.
   if (!parser_) return;
   parser_->DisableAsyncStream(true);

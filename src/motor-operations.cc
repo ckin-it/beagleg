@@ -327,19 +327,19 @@ void MotionQueueMotorOperations::RunAsyncStop(FDMultiplexer *event_server,
                                               const Callback &callback) {
   if (state_ == STOPPED) return;
   else if (state_ == PAUSED) backend_->Reset();
-  new SpeedFactorProfiler(event_server, &state_, backend_, STOPPED, 1e5, 0.1,
+  new SpeedFactorProfiler(event_server, &state_, backend_, STOPPED, 1e5, 1,
                           callback);
 }
 
 void MotionQueueMotorOperations::RunAsyncPause(FDMultiplexer *event_server) {
   if (state_ == STOPPED || state_ == PAUSED) return;
-  new SpeedFactorProfiler(event_server, &state_, backend_, PAUSED, 1e5, 0.1,
+  new SpeedFactorProfiler(event_server, &state_, backend_, PAUSED, 1e5, 1,
                           [](){});
 }
 
 void MotionQueueMotorOperations::RunAsyncResume(FDMultiplexer *event_server) {
   if (state_ != PAUSED) return;
-  new SpeedFactorProfiler(event_server, &state_, backend_, RUNNING, 1e5, 0.1,
+  new SpeedFactorProfiler(event_server, &state_, backend_, RUNNING, 1e5, 1,
                           [](){});
 }
 

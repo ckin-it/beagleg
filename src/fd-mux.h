@@ -19,6 +19,10 @@ public:
     // Returns false if that filedescriptor is already registered.
     bool RunOnReadable(int fd, const Handler &handler);
     bool IsRegisteredReadable(int fd) const;
+
+    bool RunOnWritable(int fd, const Handler &handler);
+    bool IsRegisteredWritable(int fd) const;
+
     void ScheduleDelete(int fd);
 
     // Run the main loop. Blocks while there is still a filedescriptor
@@ -26,7 +30,9 @@ public:
     void Loop();
 
 private:
-    std::map<int, Handler> handlers_;
-    std::vector<int> to_delete_;
+    std::map<int, Handler> r_handlers_;
+    std::map<int, Handler> w_handlers_;
+    std::vector<int> to_delete_r_;
+    std::vector<int> to_delete_w_;
 };
 #endif // FD_MUX_H_

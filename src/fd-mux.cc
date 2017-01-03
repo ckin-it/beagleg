@@ -7,31 +7,53 @@
 #include <algorithm>
 #include <sys/select.h>
 #include <errno.h>
- #include <string.h>
+#include <string.h>
 
 bool FDMultiplexer::RunOnReadable(int fd, const Handler &handler) {
-  return handlers_.insert({ fd, handler }).second;
+  return r_handlers_.insert({ fd, handler }).second;
 }
 
 bool FDMultiplexer::IsRegisteredReadable(int fd) const {
-    return handlers_.find(fd) != handlers_.end();
+    return r_handlers_.find(fd) != r_handlers_.end();
+}
+
+bool FDMultiplexer::RunOnWritable(int fd, const Handler &handler) {
+  return w_handlers_.insert({ fd, handler }).second;
+}
+
+bool FDMultiplexer::IsRegisteredWritable(int fd) const {
+    return w_handlers_.find(fd) != w_handlers_.end();
 }
 
 void FDMultiplexer::ScheduleDelete(int fd) {
-  to_delete_.push_back(fd);
+  if (r_handlers_.find(fd) != r_handlers_.end()) {
+    to_delete_r_.push_back(fd);
+  } else if (w_handlers_.find(fd) != w_handlers_.end()) {
+    to_delete_w_.push_back(fd);
+  }
 }
 
 void FDMultiplexer::Loop() {
     fd_set read_fds;
+    fd_set write_fds;
 
     for (;;) {
         int maxfd = -1;
         FD_ZERO(&read_fds);
+        FD_ZERO(&write_fds);
 
-        for (const auto &it : handlers_) {
+        // Readers
+        for (const auto &it : r_handlers_) {
             if (it.first >= maxfd) maxfd = it.first+1;
             FD_SET(it.first, &read_fds);
         }
+
+        // Writers
+        for (const auto &it : w_handlers_) {
+            if (it.first >= maxfd) maxfd = it.first+1;
+            FD_SET(it.first, &write_fds);
+        }
+
         if (maxfd < 0) {
             // file descriptors only can be registred from within handlers
             // or before running the Loop(). If no filedesctiptors are left,
@@ -40,7 +62,7 @@ void FDMultiplexer::Loop() {
             break;
         }
 
-        int fds_ready = select(maxfd, &read_fds, nullptr, nullptr, nullptr);
+        int fds_ready = select(maxfd, &read_fds, &write_fds, nullptr, nullptr);
         if (fds_ready < 0) {
             perror("select() failed");
             break;
@@ -52,20 +74,37 @@ void FDMultiplexer::Loop() {
             continue;
         }
 
-        for (const auto &it : handlers_) {
+        // Handle reads
+        for (const auto &it : r_handlers_) {
             if (FD_ISSET(it.first, &read_fds)) {
                 const bool retrigger = it.second();
                 if (!retrigger) {
-                    to_delete_.push_back(it.first);
+                    to_delete_r_.push_back(it.first);
                 }
                 if (--fds_ready == 0)
                     break;
             }
         }
-
-        for (int i : to_delete_) {
-            handlers_.erase(i);
+        for (int i : to_delete_r_) {
+            r_handlers_.erase(i);
         }
-        to_delete_.clear();
+
+        // Handle writes
+        for (const auto &it : w_handlers_) {
+            if (FD_ISSET(it.first, &write_fds)) {
+                const bool retrigger = it.second();
+                if (!retrigger) {
+                    to_delete_w_.push_back(it.first);
+                }
+                if (--fds_ready == 0)
+                    break;
+            }
+        }
+        for (int i : to_delete_w_) {
+            w_handlers_.erase(i);
+        }
+
+        to_delete_r_.clear();
+        to_delete_w_.clear();
     }
 }

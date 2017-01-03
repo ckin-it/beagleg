@@ -124,7 +124,7 @@ public:
 
       payload.set_auxes(data->aux);
 
-      reply->Write(payload);
+      if (!reply->Write(payload)) break;
     }
     return Status::OK;
   }

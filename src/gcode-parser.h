@@ -104,7 +104,7 @@ public:
     // Use this to do whatever other maintenance might be needed.
     // The first call to input_idle() after data has been processed
     // will have "is_first" set.
-    virtual void input_idle(bool is_first) {}
+    virtual void input_idle() {}
 
     // G24: Start/resume. Waits for the start input if available.
     virtual void wait_for_start() {}

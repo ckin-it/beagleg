@@ -97,6 +97,10 @@ public:
   // Might change values in MotionSegment.
   virtual void Enqueue(MotionSegment *segment) = 0;
 
+  // Force that each new pushed segment will be stored inside the overflow
+  // queue.
+  virtual void ForceBufferized(const bool status) = 0;
+
   // Register a Callback to be called when the queue is empty
   virtual void OnEmptyQueue(const std::function<void()> &callback) = 0;
 
@@ -137,6 +141,7 @@ public:
 
   void OnEmptyQueue(const std::function<void()> &callback);
   void Enqueue(MotionSegment *segment);
+  void ForceBufferized(const bool status);
   void WaitQueueEmpty();
   void MotorEnable(bool on);
   void Shutdown(bool flush_queue);
@@ -176,6 +181,7 @@ private:
 class DummyMotionQueue : public MotionQueue {
 public:
   void Enqueue(MotionSegment *segment) {}
+  void ForceBufferized(const bool status) {}
   void OnEmptyQueue(const std::function<void()> &callback) {}
   void WaitQueueEmpty() {}
   void MotorEnable(bool on) {}

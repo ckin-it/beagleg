@@ -467,7 +467,7 @@ int main(int argc, char *argv[]) {
   }
   Log_info("Running with PID %d", getpid());
 
-  MotionQueueMotorOperations motor_operations(motion_backend);
+  MotionQueueMotorOperations motor_operations(motion_backend, &event_server);
 
   GCodeMachineControl *machine_control
     = GCodeMachineControl::Create(config, &motor_operations,

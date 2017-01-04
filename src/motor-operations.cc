@@ -34,7 +34,11 @@
 
 #include "motor-interface-constants.h"
 #include "motion-queue.h"
+#include "fd-timer.h"
 #include "logging.h"
+
+
+#define ENABLE_DELAY 500 // milli seconds
 
 // We need two loops per motor step (edge up, edge down),
 // So we need to multiply step-counts by 2
@@ -153,10 +157,30 @@ void MotionQueueMotorOperations::EnqueueInternal(const LinearSegmentSteps &param
 
   new_element.aux = param.aux_bits;
   new_element.state = STATE_FILLED;
-  backend_->MotorEnable(true);
   // We were in stop, new stuff, so we are running again
   if (state_ == STOPPED) state_ = RUNNING;
-  backend_->Enqueue(&new_element);
+  if (direct_) {
+    if (!motor_enabled_) {
+      backend_->MotorEnable(true);
+      motor_enabled_ = true;
+      usleep(ENABLE_DELAY * 1e3);
+    }
+    backend_->Enqueue(&new_element);
+    return;
+  }
+  if (motor_enabled_) backend_->Enqueue(&new_element);
+  else {
+    backend_->MotorEnable(true);
+    motor_enabled_ = true;
+    // Force the motion queue to buffer all the segments
+    backend_->ForceBufferized(true);
+    backend_->Enqueue(&new_element);
+    new FDTimer(ENABLE_DELAY, event_server_, [this]() {
+      // Ok we can start for real now, disable the forced bufferization
+      // And start the shoveler
+      backend_->ForceBufferized(false);
+    });
+  }
 }
 
 static int get_defining_axis_steps(const LinearSegmentSteps &param) {
@@ -223,8 +247,16 @@ void MotionQueueMotorOperations::Enqueue(const LinearSegmentSteps &param) {
 }
 
 void MotionQueueMotorOperations::MotorEnable(bool on) {
-  backend_->WaitQueueEmpty();
-  backend_->MotorEnable(on);
+  if (direct_) {
+    backend_->WaitQueueEmpty();
+    backend_->MotorEnable(on);
+    motor_enabled_ = on;
+  } else {
+    backend_->OnEmptyQueue([this, on](){
+      backend_->MotorEnable(on);
+      motor_enabled_ = on;
+    });
+  }
 }
 
 void MotionQueueMotorOperations::WaitQueueEmpty() {
@@ -261,8 +293,6 @@ public:
     assert(et_ > 0);
     // Start time
     gettimeofday(&st_, 0);
-    // RESUME? Enable motors
-    if (next_state_ == RUNNING) backend_->MotorEnable(true);
     // Create a timer
     timer_ = timerfd_create(CLOCK_REALTIME, 0);
     if (timer_ == -1) perror("timerfd_create");
@@ -286,8 +316,10 @@ public:
       backend_->SetSpeedFactor(final_value_);
       if (next_state_ == PAUSED) {
         backend_->MotorEnable(false);
+        // the state motor_enabled_ is already changed the parent function
       } else if (next_state_ == STOPPED ) {
         backend_->MotorEnable(false);
+        // the state motor_enabled_ is already changed the parent function
         backend_->Reset();
       }
       *state_ = next_state_;
@@ -323,24 +355,30 @@ private:
   const float quota_;
 };
 
-void MotionQueueMotorOperations::RunAsyncStop(FDMultiplexer *event_server,
-                                              const Callback &callback) {
+void MotionQueueMotorOperations::RunAsyncStop(const Callback &callback) {
   if (state_ == STOPPED) return;
   else if (state_ == PAUSED) backend_->Reset();
-  new SpeedFactorProfiler(event_server, &state_, backend_, STOPPED, 1e5, 1,
+  motor_enabled_ = false;
+  new SpeedFactorProfiler(event_server_, &state_, backend_, STOPPED, 1e5, 1,
                           callback);
 }
 
-void MotionQueueMotorOperations::RunAsyncPause(FDMultiplexer *event_server) {
+void MotionQueueMotorOperations::RunAsyncPause() {
   if (state_ == STOPPED || state_ == PAUSED) return;
-  new SpeedFactorProfiler(event_server, &state_, backend_, PAUSED, 1e5, 1,
+  motor_enabled_ = false;
+  new SpeedFactorProfiler(event_server_, &state_, backend_, PAUSED, 1e5, 1,
                           [](){});
 }
 
-void MotionQueueMotorOperations::RunAsyncResume(FDMultiplexer *event_server) {
+void MotionQueueMotorOperations::RunAsyncResume() {
   if (state_ != PAUSED) return;
-  new SpeedFactorProfiler(event_server, &state_, backend_, RUNNING, 1e5, 1,
-                          [](){});
+  // RESUME? Enable motors
+  backend_->MotorEnable(true);
+  motor_enabled_ = true;
+  new FDTimer(ENABLE_DELAY, event_server_, [this]() {
+    new SpeedFactorProfiler(event_server_, &state_, backend_, RUNNING, 1e5, 1,
+                            [](){});
+  });
 }
 
 void MotionQueueMotorOperations::GetRealtimeStatus(

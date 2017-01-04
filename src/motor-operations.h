@@ -59,6 +59,9 @@ public:
   // Automatically enables motors if not already.
   virtual void Enqueue(const LinearSegmentSteps &segment) = 0;
 
+  // Used for homing
+  virtual void EnableDirectEnqueue(const bool status) {}
+
   // Waits for the queue to be empty and Enables/disables motors according to the
   // given boolean value (Right now, motors cannot be individually addressed).
   virtual void MotorEnable(bool on) = 0;
@@ -68,10 +71,9 @@ public:
 
   virtual void GetRealtimeStatus(int pos_steps[BEAGLEG_NUM_MOTORS],
                                  unsigned short *aux_status) {}
-  virtual void RunAsyncStop(FDMultiplexer *event_server,
-                            const Callback &callback) {}
-  virtual void RunAsyncPause(FDMultiplexer *event_server) {}
-  virtual void RunAsyncResume(FDMultiplexer *event_server) {}
+  virtual void RunAsyncStop(const Callback &callback) {}
+  virtual void RunAsyncPause() {}
+  virtual void RunAsyncResume() {}
 
   virtual void RunOnEmptyQueue(const Callback &callback) {}
 };
@@ -85,19 +87,21 @@ typedef enum state {
 class MotionQueueMotorOperations : public MotorOperations {
 public:
   // Initialize motor operations, sending planned results into the motion backend.
-  MotionQueueMotorOperations(MotionQueue *backend) : backend_(backend),
-                                                     state_(RUNNING) {}
+  MotionQueueMotorOperations(MotionQueue *backend, FDMultiplexer *event_server)
+                             : backend_(backend), event_server_(event_server),
+                               state_(RUNNING), motor_enabled_(false),
+                               direct_(false) {}
 
   virtual void Enqueue(const LinearSegmentSteps &segment);
+  virtual void EnableDirectEnqueue(const bool status) { direct_ = status; }
   virtual void MotorEnable(bool on);
   virtual void WaitQueueEmpty();
 
   virtual void GetRealtimeStatus(int pos_steps[BEAGLEG_NUM_MOTORS],
                                  unsigned short *aux_status);
-  virtual void RunAsyncStop(FDMultiplexer *event_server,
-                            const Callback &callback);
-  virtual void RunAsyncPause(FDMultiplexer *event_server);
-  virtual void RunAsyncResume(FDMultiplexer *event_server);
+  virtual void RunAsyncStop(const Callback &callback);
+  virtual void RunAsyncPause();
+  virtual void RunAsyncResume();
 
   virtual void RunOnEmptyQueue(const Callback &handler);
 
@@ -107,7 +111,10 @@ private:
                        int defining_axis_steps);
 
   MotionQueue *backend_;
+  FDMultiplexer *event_server_;
   State state_;
+  bool motor_enabled_;
+  bool direct_;
 };
 
 #endif  // _BEAGLEG_MOTOR_OPERATIONS_H_

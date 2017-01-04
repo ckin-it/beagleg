@@ -1938,7 +1938,7 @@ bool GCodeParser::Impl::ConsumeLineBuffer() {
     event_server_->RunOnReadable(timer_, [this](){
       read(timer_, NULL, sizeof(uint64_t));
       if (async_stream_is_disabled_) return false;
-      callbacks->input_idle(true);
+      callbacks->input_idle();
       return true;
     });
 
@@ -2131,7 +2131,7 @@ int GCodeParser::Impl::ParseStream(GCodeParser *owner,
     }
 
     if (select_ret == 0) {  // Timeout. Regularly call.
-      callbacks->input_idle(is_processing);
+      callbacks->input_idle();
       is_processing = false;
       continue;
     }

@@ -33,6 +33,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <time.h>
+#include <sys/timerfd.h>
 
 #include "container.h"
 #include "gcode-parser.h"
@@ -85,6 +86,8 @@ public:
   void HandleResume();
 
   ~Impl() {
+    close(fan_disable_timer_fd_);
+    close(motor_disable_timer_fd_);
     delete planner_;
   }
 
@@ -98,7 +101,7 @@ public:
   virtual void inform_origin_offset(const AxesRegister &origin);
 
   virtual void gcode_command_done(char letter, float val);
-  virtual void input_idle(bool is_first);
+  virtual void input_idle();
   virtual void wait_for_start();
   virtual void go_home(AxisBitmap_t axis_bitmap);
   virtual bool probe_axis(float feed_mm_p_sec, enum GCodeParserAxis axis,
@@ -151,8 +154,8 @@ private:
   AxesRegister coordinate_display_origin_; // parser tells us
   float current_feedrate_mm_per_sec_;    // Set via Fxxx and remembered
   float prog_speed_factor_;              // Speed factor set by program (M220)
-  time_t next_auto_disable_motor_;
-  time_t next_auto_disable_fan_;
+  int fan_disable_timer_fd_;
+  int motor_disable_timer_fd_;
   bool pause_enabled_;                  // Enabled via M120, disabled via M121
 
   enum HomingState homing_state_;
@@ -176,14 +179,32 @@ GCodeMachineControl::Impl::Impl(const MachineControlConfig &config,
     g0_feedrate_mm_per_sec_(-1),
     current_feedrate_mm_per_sec_(-1),
     prog_speed_factor_(1),
+    fan_disable_timer_fd_(-1),
+    motor_disable_timer_fd_(-1),
     homing_state_(HOMING_STATE_NEVER_HOMED) {
     pause_enabled_ = cfg_.enable_pause;
-    next_auto_disable_motor_ = -1;
-    next_auto_disable_fan_ = -1;
 }
 
 // The actual initialization. Can fail, hence we make it a separate method.
 bool GCodeMachineControl::Impl::Init() {
+  fan_disable_timer_fd_= timerfd_create(CLOCK_REALTIME, 0);
+  if (fan_disable_timer_fd_ < 0) perror("timerfd_create()");
+
+  event_server_->RunOnReadable(fan_disable_timer_fd_, [this]() {
+    read(fan_disable_timer_fd_, NULL, sizeof(uint64_t));
+    set_fanspeed(0);
+    return true;
+  });
+
+  motor_disable_timer_fd_ = timerfd_create(CLOCK_REALTIME, 0);
+  if (motor_disable_timer_fd_ < 0) perror("timerfd_create()");
+
+  event_server_->RunOnReadable(motor_disable_timer_fd_, [this]() {
+    read(motor_disable_timer_fd_, NULL, sizeof(uint64_t));
+    motors_enable(false);
+    return true;
+  });
+
   // Always keep the steps_per_mm positive, but extract direction for
   // final assignment to motor.
   for (const GCodeParserAxis axis : AllAxes()) {
@@ -681,25 +702,32 @@ void GCodeMachineControl::Impl::dwell(float value) {
   });
 }
 
-void GCodeMachineControl::Impl::input_idle(bool is_first) {
+void GCodeMachineControl::Impl::input_idle() {
   planner_->BringPathToHalt();
+
+  // Reset the motors and fan disable timer
+  if (cfg_.auto_fan_disable_seconds > 0) {
+    struct itimerspec timeout = {0};
+    float i, f;
+    f = modff(cfg_.auto_fan_disable_seconds, &i);
+    timeout.it_value.tv_sec = (int) i;
+    timeout.it_value.tv_nsec = (long) (f * 1e9l);
+
+    if (timerfd_settime(fan_disable_timer_fd_, 0, &timeout, NULL) == -1)
+      perror("timerfd_settime()");
+  } else set_fanspeed(0);
+
   if (cfg_.auto_motor_disable_seconds > 0) {
-    if (is_first) {
-      next_auto_disable_motor_ = time(NULL) + cfg_.auto_motor_disable_seconds;
-      next_auto_disable_fan_ = -1;
-    } else if (next_auto_disable_motor_ != -1 &&
-               time(NULL) >= next_auto_disable_motor_) {
-      motors_enable(false);
-      next_auto_disable_motor_ = -1;
-      if (cfg_.auto_fan_disable_seconds > 0) {
-        next_auto_disable_fan_ = time(NULL) + cfg_.auto_fan_disable_seconds;
-      }
-    }
-  }
-  if (next_auto_disable_fan_ != -1 && time(NULL) >= next_auto_disable_fan_) {
-    set_fanspeed(0);
-    next_auto_disable_fan_ = -1;
-  }
+    struct itimerspec timeout = {0};
+    float i, f;
+    f = modff(cfg_.auto_motor_disable_seconds, &i);
+    timeout.it_value.tv_sec = (int) i;
+    timeout.it_value.tv_nsec = (long) (f * 1e9l);
+
+    if (timerfd_settime(motor_disable_timer_fd_, 0, &timeout, NULL) == -1)
+      perror("timerfd_settime()");
+  } else motors_enable(false);
+
 }
 
 void GCodeMachineControl::Impl::set_speed_factor(float value) {
@@ -780,7 +808,9 @@ void GCodeMachineControl::Impl::go_home(AxisBitmap_t axes_bitmap) {
     const enum GCodeParserAxis axis = gcodep_letter2axis(axis_letter);
     if (axis == GCODE_NUM_AXES || !(axes_bitmap & (1 << axis)))
       continue;
+    motor_ops_->EnableDirectEnqueue(true);
     home_axis(axis);
+    motor_ops_->EnableDirectEnqueue(false);
   }
   homing_state_ = HOMING_STATE_HOMED;
 }
@@ -846,7 +876,7 @@ void GCodeMachineControl::Impl::HandleStop() {
   parser_->DisableAsyncStream(true);
 
   // Schedule Stop
-  motor_ops_->RunAsyncStop(event_server_, [this]() {
+  motor_ops_->RunAsyncStop([this]() {
     planner_->ExternalSetPathIsHalted();
     AxesRegister machine_pos;
     GetRealtimeStatus(&machine_pos, NULL);
@@ -863,13 +893,13 @@ void GCodeMachineControl::Impl::HandleStop() {
 void GCodeMachineControl::Impl::HandlePause() {
   if (!parser_) return;
   // Schedule Pause
-  motor_ops_->RunAsyncPause(event_server_);
+  motor_ops_->RunAsyncPause();
 }
 
 void GCodeMachineControl::Impl::HandleResume() {
   if (!parser_) return;
   // Schedule Resume
-  motor_ops_->RunAsyncResume(event_server_);
+  motor_ops_->RunAsyncResume();
 
 }
 

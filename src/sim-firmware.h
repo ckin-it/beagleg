@@ -27,6 +27,7 @@ public:
   virtual ~SimFirmwareQueue();
 
   virtual void Enqueue(MotionSegment *segment);
+  virtual void ForceBufferized(const bool status) {}
   virtual void OnEmptyQueue(const std::function<void()> &callback) {}
   virtual void WaitQueueEmpty() {}
   virtual void MotorEnable(bool on) {}

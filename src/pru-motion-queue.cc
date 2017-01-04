@@ -199,6 +199,16 @@ void PRUMotionQueue::Enqueue(MotionSegment *element) {
   }
 }
 
+void PRUMotionQueue::ForceBufferized(const bool status) {
+  if (status) {
+    overflow_ = true;
+  } else {
+    WakeUpEventHandler();
+    EnqueueInPru(&overflow_queue_.front());
+    overflow_queue_.pop();
+  }
+}
+
 void PRUMotionQueue::OnEmptyQueue(const std::function<void()> &callback) {
   if (IsQueueEmpty()) { return callback(); }
   on_empty_queue_.push_back(callback);

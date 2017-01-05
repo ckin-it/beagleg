@@ -79,7 +79,7 @@ UNITTEST_BINARIES=gcode-machine-control_test gcode-parser_test config-parser_tes
 
 DEPENDENCY_RULES=$(OBJECTS:=.d) $(UNITTEST_BINARIES:=.o.d) $(MAIN_OBJECTS:=.d)
 
-all : $(TARGETS) protos
+all : $(TARGETS)
 
 ../gcode-print-stats: gcode-print-stats.o $(GCODE_OBJECTS)
 	$(CROSS_COMPILE)$(CXX) -o $@ $^ $(LDFLAGS)
@@ -119,7 +119,7 @@ $(PRU_BIN) : motor-interface-constants.h \
 %_test: %_test.o $(OBJECTS) $(TEST_FRAMEWORK_OBJECTS) compiler-flags
 	$(CROSS_COMPILE)$(CXX) -o $@ $< $(OBJECTS) $(PRUSS_LIBS) $(LDFLAGS) $(TEST_FRAMEWORK_OBJECTS)
 
-%.o: %.cc compiler-flags
+%.o: %.cc compiler-flags protos
 	$(CROSS_COMPILE)$(CXX) $(CXXFLAGS)  -c  $< -o $@
 	@$(CROSS_COMPILE)$(CXX) $(CXXFLAGS) -MM $< > $@.d
 

@@ -210,6 +210,7 @@ void PRUMotionQueue::ForceBufferized(const bool status) {
 }
 
 void PRUMotionQueue::OnEmptyQueue(const std::function<void()> &callback) {
+  Log_debug("IS QUEUE EMPTY? %d", IsQueueEmpty());
   if (IsQueueEmpty()) { return callback(); }
   on_empty_queue_.push_back(callback);
   WakeUpEventHandler();

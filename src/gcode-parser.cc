@@ -1774,6 +1774,7 @@ void GCodeParser::Impl::ParseLine(GCodeParser *owner,
   if (debug_level_ & DEBUG_PARSER)
     Log_debug("GCodeParser| %s", line);
 
+  Log_debug("GCodeParser| %s", line);
   ++line_number_;
   err_msg_ = err_stream;  // remember as 'instance' variable.
   char letter;

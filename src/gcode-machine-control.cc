@@ -687,6 +687,7 @@ void GCodeMachineControl::Impl::dwell(float value) {
 
   // Run when the queue is empty
   motor_ops_->RunOnEmptyQueue([this, value]() {
+    Log_debug("Ok, now the queue is empty again");
     if (value == 0) return parser_->EnableAsyncStream();
     // Create a timer
     new FDTimer(value, event_server_, [this]() {
@@ -697,6 +698,7 @@ void GCodeMachineControl::Impl::dwell(float value) {
         Log_debug("Pause input detected, waiting for Start");
         wait_for_start();
       }
+      mprintf("finished\n");
       parser_->EnableAsyncStream();
     });
   });
@@ -885,7 +887,7 @@ void GCodeMachineControl::Impl::HandleStop() {
     }
     // Update the parser as well
     parser_->UpdateMachinePosition(machine_pos);
-    mprintf("stopped");
+    mprintf("stopped\n");
     parser_->EnableAsyncStream();
   });
 }

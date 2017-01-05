@@ -247,16 +247,18 @@ void MotionQueueMotorOperations::Enqueue(const LinearSegmentSteps &param) {
 }
 
 void MotionQueueMotorOperations::MotorEnable(bool on) {
-  if (direct_) {
-    backend_->WaitQueueEmpty();
-    backend_->MotorEnable(on);
-    motor_enabled_ = on;
-  } else {
-    backend_->OnEmptyQueue([this, on](){
-      backend_->MotorEnable(on);
-      motor_enabled_ = on;
-    });
-  }
+  // if (direct_) {
+  //   backend_->WaitQueueEmpty();
+  //   backend_->MotorEnable(on);
+  //   motor_enabled_ = on;
+  // } else {
+  //   Log_debug("MOtor enabled schedules the task");
+  //   backend_->OnEmptyQueue([this, on](){
+  //     Log_debug("Hey, time to shut down motors");
+  //     backend_->MotorEnable(on);
+  //     motor_enabled_ = on;
+  //   });
+  // }
 }
 
 void MotionQueueMotorOperations::WaitQueueEmpty() {

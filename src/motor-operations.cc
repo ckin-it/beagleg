@@ -38,7 +38,7 @@
 #include "logging.h"
 
 
-#define ENABLE_DELAY 500 // milli seconds
+#define ENABLE_DELAY 800 // milli seconds
 
 // We need two loops per motor step (edge up, edge down),
 // So we need to multiply step-counts by 2
@@ -392,7 +392,7 @@ void MotionQueueMotorOperations::GetRealtimeStatus(
     // that's due to the max_fraction in pru-motion-queue which is not
     // 0xFFFFFFFF / LOOPS_PER_STEP
     // pos_steps[i] = steps[i] / LOOPS_PER_STEP; // Convert into steps
-    pos_steps[i] = steps[i];
+    pos_steps[i] = steps[i] / LOOPS_PER_STEP;
   }
 }
 

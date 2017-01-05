@@ -98,7 +98,7 @@ struct HistorySegment {
 // needs to be divided by LOOP_PER_STEP but this is something to be done
 // inside motor operations
 void PRUMotionQueue::RegisterHistorySegment(const MotionSegment &element) {
-  const uint64_t max_fraction = 0xFFFFFFFF;
+  const uint64_t max_fraction = 0xFFFFFFFF / 2;
   const unsigned int last_insert_index = (queue_pos_ - 1) % QUEUE_LEN;
   const struct HistorySegment &previous
     = shadow_queue_[(last_insert_index - 1) % QUEUE_LEN];
@@ -128,7 +128,7 @@ void PRUMotionQueue::RegisterHistorySegment(const MotionSegment &element) {
 // TODO: GetMotorsLoops returns Auxes? hmm not very clear
 void PRUMotionQueue::GetMotorsStatus(
     MotorsRegister *absolute_pos_loops, unsigned short *aux) {
-  const uint64_t max_fraction = 0xFFFFFFFF;
+  const uint64_t max_fraction = 0xFFFFFFFF / 2;
   const struct QueueStatus status = *(struct QueueStatus*) &pru_data_->status;
   const struct HistorySegment &current = shadow_queue_[status.index];
   const uint64_t counter = status.counter;
@@ -210,7 +210,6 @@ void PRUMotionQueue::ForceBufferized(const bool status) {
 }
 
 void PRUMotionQueue::OnEmptyQueue(const std::function<void()> &callback) {
-  Log_debug("IS QUEUE EMPTY? %d", IsQueueEmpty());
   if (IsQueueEmpty()) { return callback(); }
   on_empty_queue_.push_back(callback);
   WakeUpEventHandler();
@@ -283,7 +282,7 @@ void PRUMotionQueue::Reset() {
 
   // Let's copy the actual number of loops to the *previous*
   // End
-  const uint64_t max_fraction = 0xFFFFFFFF;
+  const uint64_t max_fraction = 0xFFFFFFFF / 2;
   const struct QueueStatus status = *(struct QueueStatus*) &pru_data_->status;
   const struct HistorySegment &current = shadow_queue_[status.index];
   const uint64_t counter = status.counter;

@@ -152,6 +152,7 @@ private:
                                          // (will be trimmed if needed)
   // Current machine configuration
   AxesRegister coordinate_display_origin_; // parser tells us
+  AxesRegister homed_motors_offset_; // motors tells us
   float current_feedrate_mm_per_sec_;    // Set via Fxxx and remembered
   float prog_speed_factor_;              // Speed factor set by program (M220)
   int fan_disable_timer_fd_;
@@ -687,7 +688,6 @@ void GCodeMachineControl::Impl::dwell(float value) {
 
   // Run when the queue is empty
   motor_ops_->RunOnEmptyQueue([this, value]() {
-    Log_debug("Ok, now the queue is empty again");
     if (value == 0) return parser_->EnableAsyncStream();
     // Create a timer
     new FDTimer(value, event_server_, [this]() {
@@ -698,7 +698,6 @@ void GCodeMachineControl::Impl::dwell(float value) {
         Log_debug("Pause input detected, waiting for Start");
         wait_for_start();
       }
-      mprintf("finished\n");
       parser_->EnableAsyncStream();
     });
   });
@@ -788,7 +787,7 @@ void GCodeMachineControl::Impl::home_axis(enum GCodeParserAxis axis) {
   const float home_pos = ((trigger == HardwareMapping::TRIGGER_MAX)
                           ? cfg_.move_range_mm[axis]
                           : 0.0f);
-  const float kHomingSpeed = 15; // mm/sec  (make configurable ?)
+  const float kHomingSpeed = 10; // mm/sec  (make configurable ?)
 
   planner_->BringPathToHalt();
   if (hardware_mapping_->IsHardwareSimulated()) {
@@ -815,6 +814,17 @@ void GCodeMachineControl::Impl::go_home(AxisBitmap_t axes_bitmap) {
     motor_ops_->EnableDirectEnqueue(false);
   }
   homing_state_ = HOMING_STATE_HOMED;
+
+  // Since during home we did some steps, let's count them as an offset
+  // when evaluating the position
+  int motors_steps[HardwareMapping::NUM_MOTORS];
+  int axes_steps[GCODE_NUM_AXES];
+  motor_ops_->GetRealtimeStatus(motors_steps, NULL);
+  hardware_mapping_-> \
+    AssignMotorsStepsToAxis(axes_steps, motors_steps);
+  for (const GCodeParserAxis axis : AllAxes()) {
+    homed_motors_offset_[axis] = axes_steps[axis];
+  }
 }
 
 bool GCodeMachineControl::Impl::probe_axis(float feedrate,
@@ -864,7 +874,8 @@ void GCodeMachineControl::Impl::GetRealtimeStatus(AxesRegister *pos,
   hardware_mapping_-> \
     AssignMotorsStepsToAxis(axes_steps, motors_steps);
   for (const GCodeParserAxis axis : AllAxes()) {
-    (*pos)[axis] = (cfg_.steps_per_mm[axis] != 0) ? axes_steps[axis] / cfg_.steps_per_mm[axis] : 0;
+    (*pos)[axis] = (cfg_.steps_per_mm[axis] != 0) ?
+      (axes_steps[axis] - homed_motors_offset_[axis]) : 0;
   }
 }
 

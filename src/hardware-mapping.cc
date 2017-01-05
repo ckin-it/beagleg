@@ -109,7 +109,7 @@ void HardwareMapping::AssignMotorsStepsToAxis(int target[GCODE_NUM_AXES],
       m++;
     }
     // Maybe this axis is not mapped to any motor
-    if (m < NUM_MOTORS) target[axis] = source[m];
+    if (m < NUM_MOTORS) target[axis] = driver_flip_[m] * source[m];
     else target[axis] = 0;
   }
 }

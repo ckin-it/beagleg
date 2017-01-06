@@ -875,7 +875,8 @@ void GCodeMachineControl::Impl::GetRealtimeStatus(AxesRegister *pos,
     AssignMotorsStepsToAxis(axes_steps, motors_steps);
   for (const GCodeParserAxis axis : AllAxes()) {
     (*pos)[axis] = (cfg_.steps_per_mm[axis] != 0) ?
-      (axes_steps[axis] - homed_motors_offset_[axis]) : 0;
+      (axes_steps[axis] - homed_motors_offset_[axis])
+        / cfg_.steps_per_mm[axis] : 0;
   }
 }
 

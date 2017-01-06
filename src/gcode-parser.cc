@@ -2105,7 +2105,6 @@ int GCodeParser::Impl::ParseStream(GCodeParser *owner,
     return 1;
   }
 
-  bool is_processing = true;
   fd_set read_fds;
   struct timeval wait_time;
   int select_ret;
@@ -2132,11 +2131,8 @@ int GCodeParser::Impl::ParseStream(GCodeParser *owner,
 
     if (select_ret == 0) {  // Timeout. Regularly call.
       callbacks->input_idle();
-      is_processing = false;
       continue;
     }
-
-    is_processing = true;
 
     // Filedescriptor readable. Now wait for a line to finish.
     if (fgets(buffer, sizeof(buffer), gcode_stream) == NULL)

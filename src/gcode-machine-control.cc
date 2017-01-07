@@ -823,6 +823,8 @@ void GCodeMachineControl::Impl::go_home(AxisBitmap_t axes_bitmap) {
   hardware_mapping_-> \
     AssignMotorsStepsToAxis(axes_steps, motors_steps);
   for (const GCodeParserAxis axis : AllAxes()) {
+    if (axis == GCODE_NUM_AXES || !(axes_bitmap & (1 << axis)))
+      continue;
     homed_motors_offset_[axis] = axes_steps[axis];
   }
 }

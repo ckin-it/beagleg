@@ -98,7 +98,7 @@ struct HistorySegment {
 // needs to be divided by LOOP_PER_STEP but this is something to be done
 // inside motor operations
 void PRUMotionQueue::RegisterHistorySegment(const MotionSegment &element) {
-  const uint64_t max_fraction = 0xFFFFFFFF / 2;
+  const uint64_t max_fraction = 0xFFFFFFFF;
   const unsigned int last_insert_index = (queue_pos_ - 1) % QUEUE_LEN;
   const struct HistorySegment &previous
     = shadow_queue_[(last_insert_index - 1) % QUEUE_LEN];
@@ -117,6 +117,11 @@ void PRUMotionQueue::RegisterHistorySegment(const MotionSegment &element) {
     const int sign = (direction_bits >> i) & 1 ? -1 : 1;
     uint64_t loops = fraction * total_loops;
     loops /= max_fraction;
+    // This is a bit problematic
+    // It's related to the following question: How do we treat an odd number
+    // of loops? Is it a whole step? Or not? And why do we have an odd number
+    // of loops when evaluating things back?
+    loops += fraction == 0 ? 0 : 1;
     new_slot->cumulative_loops[i] = previous.cumulative_loops[i]
                                     + sign * loops;
   }
@@ -128,7 +133,7 @@ void PRUMotionQueue::RegisterHistorySegment(const MotionSegment &element) {
 // TODO: GetMotorsLoops returns Auxes? hmm not very clear
 void PRUMotionQueue::GetMotorsStatus(
     MotorsRegister *absolute_pos_loops, unsigned short *aux) {
-  const uint64_t max_fraction = 0xFFFFFFFF / 2;
+  const uint64_t max_fraction = 0xFFFFFFFF;
   const struct QueueStatus status = *(struct QueueStatus*) &pru_data_->status;
   const struct HistorySegment &current = shadow_queue_[status.index];
   const uint64_t counter = status.counter;
@@ -139,7 +144,10 @@ void PRUMotionQueue::GetMotorsStatus(
     loops /= max_fraction;
     (*absolute_pos_loops)[i] = current.cumulative_loops[i] - sign * loops;
   }
-  if (aux != NULL) *aux = current.aux;
+  if (aux != NULL) {
+    if (IsQueueEmpty()) *aux = hardware_mapping_->GetAuxBits();
+    else *aux = current.aux;
+  }
 }
 
 // Stop gap for compiler attempting to be overly clever when copying between

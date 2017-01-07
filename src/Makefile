@@ -77,6 +77,8 @@ TEST_FRAMEWORK_OBJECTS=gtest-all.o gmock-all.o
 TARGETS=../machine-control ../gcode-print-stats gcode2ps
 UNITTEST_BINARIES=gcode-machine-control_test gcode-parser_test config-parser_test string-util_test machine-control-config_test arc-gen_test planner_test simple-lexer_test pru-motion-queue_test linebuf-reader_test
 
+PROTOS=control-interface.pb.cc control-interface.pb.h control-interface.grpc.pb.cc control-interface.grpc.pb.h
+
 DEPENDENCY_RULES=$(OBJECTS:=.d) $(UNITTEST_BINARIES:=.o.d) $(MAIN_OBJECTS:=.d)
 
 all : $(TARGETS)
@@ -97,9 +99,6 @@ test-html: test-out/test.html
 test-out/test.html: gcode2ps test-create-html.sh testdata/*.gcode
 	./test-create-html.sh testdata/*.gcode
 
-protos: control-interface.pb.cc control-interface.pb.h \
-	control-interface.grpc.pb.cc control-interface.grpc.pb.h
-
 pause-client: pause-client.o $(PRUSS_LIBS)
 	$(CROSS_COMPILE)$(CXX) $(CFLAGS) -o $@ $^ $(PRUSS_LIBS) $(LDFLAGS)
 
@@ -119,7 +118,7 @@ $(PRU_BIN) : motor-interface-constants.h \
 %_test: %_test.o $(OBJECTS) $(TEST_FRAMEWORK_OBJECTS) compiler-flags
 	$(CROSS_COMPILE)$(CXX) -o $@ $< $(OBJECTS) $(PRUSS_LIBS) $(LDFLAGS) $(TEST_FRAMEWORK_OBJECTS)
 
-%.o: %.cc compiler-flags protos
+%.o: %.cc compiler-flags $(PROTOS)
 	$(CROSS_COMPILE)$(CXX) $(CXXFLAGS)  -c  $< -o $@
 	@$(CROSS_COMPILE)$(CXX) $(CXXFLAGS) -MM $< > $@.d
 

@@ -392,7 +392,7 @@ void MotionQueueMotorOperations::GetRealtimeStatus(
     // that's due to the max_fraction in pru-motion-queue which is not
     // 0xFFFFFFFF / LOOPS_PER_STEP
     // pos_steps[i] = steps[i] / LOOPS_PER_STEP; // Convert into steps
-    pos_steps[i] = steps[i] / LOOPS_PER_STEP;
+    pos_steps[i] = steps[i];
   }
 }
 

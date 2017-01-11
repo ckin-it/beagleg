@@ -688,7 +688,10 @@ void GCodeMachineControl::Impl::dwell(float value) {
 
   // Run when the queue is empty
   motor_ops_->RunOnEmptyQueue([this, value]() {
-    if (value == 0) return parser_->EnableAsyncStream();
+    if (value == 0) {
+      mprintf("completed\n");
+      return parser_->EnableAsyncStream();
+    }
     // Create a timer
     new FDTimer(value, event_server_, [this]() {
       // TODO:(lromor) This it will block the whole loop
@@ -699,6 +702,7 @@ void GCodeMachineControl::Impl::dwell(float value) {
         wait_for_start();
       }
       parser_->EnableAsyncStream();
+      mprintf("completed\n");
     });
   });
 }

@@ -66,10 +66,9 @@ GCODE_OBJECTS=gcode-parser.o gcode-machine-control.o determine-print-stats.o \
               generic-gpio.o arc-gen.o pwm-timer.o logging.o config-parser.o \
 	      string-util.o machine-control-config.o hardware-mapping.o \
 	      spindle-control.o planner.o simple-lexer.o adc.o \
-	      gcode-parser-config.o fd-mux.o linebuf-reader.o struct-buffer.o \
-	      grpc-control-server.o
+	      gcode-parser-config.o fd-mux.o linebuf-reader.o struct-buffer.o
 
-OBJECTS=motor-operations.o sim-firmware.o pru-motion-queue.o uio-pruss-interface.o $(GCODE_OBJECTS)
+OBJECTS=motor-operations.o sim-firmware.o pru-motion-queue.o uio-pruss-interface.o grpc-control-server.o $(PROTOS) $(GCODE_OBJECTS)
 MAIN_OBJECTS=machine-control.o gcode-print-stats.o gcode2ps.o
 TEST_FRAMEWORK_OBJECTS=gtest-all.o gmock-all.o
 
@@ -117,7 +116,7 @@ $(PRU_BIN) : motor-interface-constants.h \
 %_test: %_test.o $(OBJECTS) $(TEST_FRAMEWORK_OBJECTS) compiler-flags
 	$(CROSS_COMPILE)$(CXX) -o $@ $< $(OBJECTS) $(PRUSS_LIBS) $(LDFLAGS) $(TEST_FRAMEWORK_OBJECTS)
 
-grpc-control-server.o: $(PROTOS) grpc-control-server.cc
+grpc-control-server.o: grpc-control-server.cc $(PROTOS)
 	$(CROSS_COMPILE)$(CXX) $(CXXFLAGS)  -c  $< -o $@
 	@$(CROSS_COMPILE)$(CXX) $(CXXFLAGS) -MM $< > $@.d
 

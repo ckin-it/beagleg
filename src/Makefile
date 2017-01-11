@@ -67,8 +67,7 @@ GCODE_OBJECTS=gcode-parser.o gcode-machine-control.o determine-print-stats.o \
 	      string-util.o machine-control-config.o hardware-mapping.o \
 	      spindle-control.o planner.o simple-lexer.o adc.o \
 	      gcode-parser-config.o fd-mux.o linebuf-reader.o struct-buffer.o \
-	      grpc-control-server.o control-interface.grpc.pb.o \
-				control-interface.pb.o
+	      grpc-control-server.o
 
 OBJECTS=motor-operations.o sim-firmware.o pru-motion-queue.o uio-pruss-interface.o $(GCODE_OBJECTS)
 MAIN_OBJECTS=machine-control.o gcode-print-stats.o gcode2ps.o
@@ -77,7 +76,7 @@ TEST_FRAMEWORK_OBJECTS=gtest-all.o gmock-all.o
 TARGETS=../machine-control ../gcode-print-stats gcode2ps
 UNITTEST_BINARIES=gcode-machine-control_test gcode-parser_test config-parser_test string-util_test machine-control-config_test arc-gen_test planner_test simple-lexer_test pru-motion-queue_test linebuf-reader_test
 
-PROTOS=control-interface.pb.cc control-interface.pb.h control-interface.grpc.pb.cc control-interface.grpc.pb.h
+PROTOS=control-interface.pb.o control-interface.grpc.pb.o
 
 DEPENDENCY_RULES=$(OBJECTS:=.d) $(UNITTEST_BINARIES:=.o.d) $(MAIN_OBJECTS:=.d)
 
@@ -118,7 +117,11 @@ $(PRU_BIN) : motor-interface-constants.h \
 %_test: %_test.o $(OBJECTS) $(TEST_FRAMEWORK_OBJECTS) compiler-flags
 	$(CROSS_COMPILE)$(CXX) -o $@ $< $(OBJECTS) $(PRUSS_LIBS) $(LDFLAGS) $(TEST_FRAMEWORK_OBJECTS)
 
-%.o: %.cc compiler-flags $(PROTOS)
+grpc-control-server.o: $(PROTOS) grpc-control-server.cc
+	$(CROSS_COMPILE)$(CXX) $(CXXFLAGS)  -c  $< -o $@
+	@$(CROSS_COMPILE)$(CXX) $(CXXFLAGS) -MM $< > $@.d
+
+%.o: %.cc compiler-flags
 	$(CROSS_COMPILE)$(CXX) $(CXXFLAGS)  -c  $< -o $@
 	@$(CROSS_COMPILE)$(CXX) $(CXXFLAGS) -MM $< > $@.d
 

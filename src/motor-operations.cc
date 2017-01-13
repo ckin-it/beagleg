@@ -361,14 +361,14 @@ void MotionQueueMotorOperations::RunAsyncStop(const Callback &callback) {
   if (state_ == STOPPED) return;
   else if (state_ == PAUSED) backend_->Reset();
   motor_enabled_ = false;
-  new SpeedFactorProfiler(event_server_, &state_, backend_, STOPPED, 1e5, 1,
+  new SpeedFactorProfiler(event_server_, &state_, backend_, STOPPED, 1e5, 0.2,
                           callback);
 }
 
 void MotionQueueMotorOperations::RunAsyncPause() {
   if (state_ == STOPPED || state_ == PAUSED) return;
   motor_enabled_ = false;
-  new SpeedFactorProfiler(event_server_, &state_, backend_, PAUSED, 1e5, 1,
+  new SpeedFactorProfiler(event_server_, &state_, backend_, PAUSED, 1e5, 0.2,
                           [](){});
 }
 
@@ -378,7 +378,7 @@ void MotionQueueMotorOperations::RunAsyncResume() {
   backend_->MotorEnable(true);
   motor_enabled_ = true;
   new FDTimer(ENABLE_DELAY, event_server_, [this]() {
-    new SpeedFactorProfiler(event_server_, &state_, backend_, RUNNING, 1e5, 1,
+    new SpeedFactorProfiler(event_server_, &state_, backend_, RUNNING, 1e5, 0.2,
                             [](){});
   });
 }

@@ -290,7 +290,7 @@ void PRUMotionQueue::Reset() {
 
   // Let's copy the actual number of loops to the *previous*
   // End
-  const uint64_t max_fraction = 0xFFFFFFFF / 2;
+  const uint64_t max_fraction = 0xFFFFFFFF;
   const struct QueueStatus status = *(struct QueueStatus*) &pru_data_->status;
   const struct HistorySegment &current = shadow_queue_[status.index];
   const uint64_t counter = status.counter;

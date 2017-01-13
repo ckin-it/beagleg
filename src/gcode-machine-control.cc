@@ -905,8 +905,8 @@ void GCodeMachineControl::Impl::HandleStop() {
     }
     // Update the parser as well
     parser_->UpdateMachinePosition(machine_pos);
-    mprintf("stopped\n");
     parser_->EnableAsyncStream();
+    mprintf("stopped\n");
   });
 }
 

@@ -240,9 +240,10 @@ bool PRUMotionQueue::EventHandler() {
   pru_interface_->ClearEvent();
   if (overflow_) Shovel();
   if (on_empty_queue_.size() > 0 && IsQueueEmpty()){
-    for (const auto &callback : on_empty_queue_) { callback();
-      on_empty_queue_.clear();
+    for (const auto &callback : on_empty_queue_) {
+      callback();
     }
+    on_empty_queue_.clear();
   }
   if (!overflow_ && on_empty_queue_.size() == 0) { // Sleep
     handler_is_running_ = false;

@@ -38,7 +38,7 @@
 #include "logging.h"
 
 
-#define ENABLE_DELAY 800 // milli seconds
+#define ENABLE_DELAY 600 // milli seconds
 
 // We need two loops per motor step (edge up, edge down),
 // So we need to multiply step-counts by 2
@@ -247,16 +247,16 @@ void MotionQueueMotorOperations::Enqueue(const LinearSegmentSteps &param) {
 }
 
 void MotionQueueMotorOperations::MotorEnable(bool on) {
-  if (direct_) {
-    backend_->WaitQueueEmpty();
-    backend_->MotorEnable(on);
-    motor_enabled_ = on;
-  } else {
-    backend_->OnEmptyQueue([this, on](){
-      backend_->MotorEnable(on);
-      motor_enabled_ = on;
-    });
-  }
+  // if (direct_) {
+  //   backend_->WaitQueueEmpty();
+  //   backend_->MotorEnable(on);
+  //   motor_enabled_ = on;
+  // } else {
+  //   backend_->OnEmptyQueue([this, on](){
+  //     backend_->MotorEnable(on);
+  //     motor_enabled_ = on;
+  //   });
+  // }
 }
 
 void MotionQueueMotorOperations::WaitQueueEmpty() {

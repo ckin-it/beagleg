@@ -211,9 +211,12 @@ void PRUMotionQueue::ForceBufferized(const bool status) {
   if (status) {
     overflow_ = true;
   } else {
-    WakeUpEventHandler();
-    EnqueueInPru(&overflow_queue_.front());
-    overflow_queue_.pop();
+    // If not let's push the first item, otherwise the pru will never trigger
+    if (!overflow_queue_.empty()) {
+      WakeUpEventHandler();
+      EnqueueInPru(&overflow_queue_.front());
+      overflow_queue_.pop();
+    }
   }
 }
 
@@ -250,7 +253,7 @@ bool PRUMotionQueue::EventHandler() {
 
 // Useful for async
 bool PRUMotionQueue::IsQueueEmpty() {
-  if (overflow_) return false; // It must be full
+  if (overflow_) return false; // It must be full except if we are buffering
   const unsigned int last_insert_index = (queue_pos_ - 1) % QUEUE_LEN;
   return pru_data_->ring_buffer[last_insert_index].state == STATE_EMPTY;
 }

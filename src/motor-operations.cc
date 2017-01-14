@@ -247,18 +247,16 @@ void MotionQueueMotorOperations::Enqueue(const LinearSegmentSteps &param) {
 }
 
 void MotionQueueMotorOperations::MotorEnable(bool on) {
-  // if (direct_) {
-  //   backend_->WaitQueueEmpty();
-  //   backend_->MotorEnable(on);
-  //   motor_enabled_ = on;
-  // } else {
-  //   Log_debug("MOtor enabled schedules the task");
-  //   backend_->OnEmptyQueue([this, on](){
-  //     Log_debug("Hey, time to shut down motors");
-  //     backend_->MotorEnable(on);
-  //     motor_enabled_ = on;
-  //   });
-  // }
+  if (direct_) {
+    backend_->WaitQueueEmpty();
+    backend_->MotorEnable(on);
+    motor_enabled_ = on;
+  } else {
+    backend_->OnEmptyQueue([this, on](){
+      backend_->MotorEnable(on);
+      motor_enabled_ = on;
+    });
+  }
 }
 
 void MotionQueueMotorOperations::WaitQueueEmpty() {
@@ -358,7 +356,11 @@ private:
 };
 
 void MotionQueueMotorOperations::RunAsyncStop(const Callback &callback) {
-  if (state_ == STOPPED) return;
+  if (state_ == STOPPED) {
+    // Do not forget running the callback
+    callback();
+    return;
+  }
   else if (state_ == PAUSED) backend_->Reset();
   motor_enabled_ = false;
   new SpeedFactorProfiler(event_server_, &state_, backend_, STOPPED, 1e5, 0.2,

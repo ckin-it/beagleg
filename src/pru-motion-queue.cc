@@ -316,7 +316,17 @@ void PRUMotionQueue::Reset() {
   queue_pos_ = 0;
   // Clean the overflow queue
   clear_std_queue(overflow_queue_);
-  on_empty_queue_.clear();
+
+  // NOTE: executing anyway the callbacks can be bad for now
+  // It's important in case we pressed stop when we were blocking with M400
+  // or G4 
+  if (on_empty_queue_.size() > 0 && IsQueueEmpty()){
+    for (const auto &callback : on_empty_queue_) {
+      callback();
+    }
+    on_empty_queue_.clear();
+  }
+
   overflow_ = false;
   handler_is_running_ = false;
   fmux_->ScheduleDelete(pru_interface_->EventFd());

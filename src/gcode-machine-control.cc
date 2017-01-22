@@ -809,7 +809,9 @@ void GCodeMachineControl::Impl::home_axis(enum GCodeParserAxis axis) {
 }
 
 void GCodeMachineControl::Impl::go_home(AxisBitmap_t axes_bitmap) {
+  parser_->DisableAsyncStream(true);
   planner_->BringPathToHalt();
+
   for (const char axis_letter : cfg_.home_order) {
     const enum GCodeParserAxis axis = gcodep_letter2axis(axis_letter);
     if (axis == GCODE_NUM_AXES || !(axes_bitmap & (1 << axis)))
@@ -832,6 +834,7 @@ void GCodeMachineControl::Impl::go_home(AxisBitmap_t axes_bitmap) {
       continue;
     homed_motors_offset_[axis] = axes_steps[axis];
   }
+  parser_->EnableAsyncStream();
 }
 
 bool GCodeMachineControl::Impl::probe_axis(float feedrate,

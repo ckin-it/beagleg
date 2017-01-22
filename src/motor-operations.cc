@@ -315,10 +315,10 @@ public:
     if (ct > et_) { // We are done
       backend_->SetSpeedFactor(final_value_);
       if (next_state_ == PAUSED) {
-        backend_->MotorEnable(false);
+        // backend_->MotorEnable(false);
         // the state motor_enabled_ is already changed the parent function
       } else if (next_state_ == STOPPED ) {
-        backend_->MotorEnable(false);
+        //backend_->MotorEnable(false);
         // the state motor_enabled_ is already changed the parent function
         backend_->Reset();
       }

@@ -272,10 +272,11 @@ WAIT_RESUME:
 	MOV r5, 0xffffffff
 	QBEQ WAIT_RESUME, r4, r5
 
-RESET_COUNTER:
   ;; Since we need r28 even for the status register,
   ;; but also for the multiplication let's backup its content in r5
   MOV r5, r28
+
+RESET_COUNTER:
 	MOV r6, r1
 
 STEP_DELAY:				; Create time delay between steps.
@@ -289,11 +290,19 @@ STEP_DELAY:				; Create time delay between steps.
 	;; Now the fractional part, this is a multiplication between
 	;; the 16bit LSB of the factor, and r1
 
+  MOV r28, r4 ; First operand
+	MOV r29, r1 ; Second operand
+
+	;; problem, the r20-r27 stores the mstate, need to backup
+	;; r25, r26, r27
+	MOV r0, r25
+	MOV r1, r26
+	MOV r4, r27
+
 	;; Multiply
 	CLR r25, 0
 	XOUT 0, R25, 1
-	MOV r28, r4 ; First operand
-	MOV r29, r1 ; Second operand
+
 	XIN 0, R26, 4 ; Read 32 bit from the hardware multiplier
 	XIN 0, R27, 4 ; Read 32 bit from the hardware multiplier
 	MOV r6, r26;
@@ -309,6 +318,9 @@ FRAC_DELAY:
 
 DELAY_END:
   ;; Let's pick up the status register values back
+  MOV r25, r0
+	MOV r26, r1
+	MOV r27, r4
   MOV r28, r5
   JMP STEP_GEN
 

@@ -40,6 +40,7 @@
 #include <sys/timerfd.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
+#include <sys/socket.h>
 
 #include "logging.h"
 #include "string-util.h"
@@ -1774,6 +1775,8 @@ void GCodeParser::Impl::ParseLine(GCodeParser *owner,
   if (debug_level_ & DEBUG_PARSER)
     Log_debug("GCodeParser| %s", line);
 
+  Log_debug("GCodeParser| %s", line);
+
   ++line_number_;
   err_msg_ = err_stream;  // remember as 'instance' variable.
   char letter;
@@ -1964,11 +1967,13 @@ bool GCodeParser::Impl::ConsumeLineBuffer() {
 // NOTE: This is meant to be run with the connection_ fd
 bool GCodeParser::Impl::ParseBufferedLines() {
   if (async_stream_is_disabled_) return false;
+
+  assert(already_running_);
+
   if (reader_.Update(connection_) == 0) {
     // Closing the connection
     callbacks->gcode_finished(true);
     return CloseAsyncConnection();
-    Log_info("Client disconnected.");
   }
 
   // We always need (if we can) to parse at least one line
@@ -1982,6 +1987,8 @@ bool GCodeParser::Impl::ParseBufferedLines() {
   // This should return true or false in case the line was movimentation or not
   // and only if is, reset the timer.
   ParseLine(owner_, line, err_stream_);
+
+  if (!already_running_) return false;
 
   if (timerfd_settime(timer_, 0, &timeout_, NULL) == -1)
     Log_error("timerfd_settime");
@@ -2061,6 +2068,15 @@ void GCodeParser::Impl::EnableAsyncStream() {
   if (!async_stream_is_disabled_) return; // Already running
   async_stream_is_disabled_ = false;
 
+  // Let's check that the client in the meanwhile didn't disconnected
+  char buffer;
+  if (recv(connection_, &buffer,
+           sizeof(buffer), MSG_PEEK | MSG_DONTWAIT) == 0) {
+    callbacks->gcode_finished(true);
+    Log_info("Client disconnected.");
+    CloseAsyncConnection();
+    return;
+  }
   // The ParseBufferedLines will start after we are sure ther is no
   // remaining line in the reader_
   event_server_->RunOnReadable(event_fd_, [this](){

@@ -319,8 +319,8 @@ void PRUMotionQueue::Reset() {
 
   // NOTE: executing anyway the callbacks can be bad for now
   // It's important in case we pressed stop when we were blocking with M400
-  // or G4 
-  if (on_empty_queue_.size() > 0 && IsQueueEmpty()){
+  // or G4
+  if (on_empty_queue_.size() > 0){
     for (const auto &callback : on_empty_queue_) {
       callback();
     }

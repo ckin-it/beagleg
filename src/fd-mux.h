@@ -23,6 +23,9 @@ public:
     bool RunOnWritable(int fd, const Handler &handler);
     bool IsRegisteredWritable(int fd) const;
 
+    bool RunOnException(int fd, const Handler &handler);
+    bool IsRegisteredExceptioned(int fd) const;
+
     void ScheduleDelete(int fd);
 
     // Run the main loop. Blocks while there is still a filedescriptor
@@ -32,7 +35,9 @@ public:
 private:
     std::map<int, Handler> r_handlers_;
     std::map<int, Handler> w_handlers_;
+    std::map<int, Handler> e_handlers_;
     std::vector<int> to_delete_r_;
     std::vector<int> to_delete_w_;
+    std::vector<int> to_delete_e_;
 };
 #endif // FD_MUX_H_

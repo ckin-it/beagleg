@@ -22,6 +22,10 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <sys/stat.h>
+#include <stdlib.h>
+#include <string.h>
+#include <string>
 
 #include "motor-interface-constants.h"
 #include "generic-gpio.h"
@@ -217,4 +221,134 @@ void unmap_gpio() {
   if (gpio_1) { munmap((void*)gpio_1, GPIO_MMAP_SIZE); gpio_1 = NULL; }
   if (gpio_2) { munmap((void*)gpio_2, GPIO_MMAP_SIZE); gpio_2 = NULL; }
   if (gpio_3) { munmap((void*)gpio_3, GPIO_MMAP_SIZE); gpio_3 = NULL; }
+}
+
+int get_base_index(uint32_t gpio_base) {
+  switch (gpio_base) {
+  case GPIO_0_BASE:  return 0;
+  case GPIO_1_BASE:  return 1;
+  case GPIO_2_BASE:  return 2;
+  case GPIO_3_BASE:  return 3;
+  }
+  return -1;
+}
+
+static const char *dir_map[] = {
+  "in\n",
+  "out\n"
+};
+
+int FSGpio::SetDir(Direction dir) {
+
+  char *path;
+
+  // Check if the gpio is already in the correct direction
+  asprintf(&path, "%sdirection", gpio_.path);
+  FILE *fdir = fopen(path, "r+w");
+  free(path);
+
+  char current_dir_value[5] = {0};
+  fgets(current_dir_value , sizeof(current_dir_value), fdir);
+  if (strcmp(current_dir_value, dir_map[dir]) != 0) {
+    // Be sure that the edge value is set on none
+    asprintf(&path, "%sedge", gpio_.path);
+    FILE *fedge = fopen(path, "w");
+    free(path);
+    const char edge[] = "none\n";
+    fprintf(fedge, edge);
+    fclose(fedge);
+
+    // Set in or out
+    fprintf(fdir, dir_map[dir]);
+    fclose(fdir);
+  }
+
+  if (dir == INPUT) {
+    // Store fd
+    asprintf(&path, "%svalue", gpio_.path);
+    gpio_.fd = open(path, O_RDONLY);
+  }
+
+  return 0;
+}
+
+static const char *edge_map[] = {
+  "none\n",
+  "rising\n",
+  "falling\n",
+  "both"
+};
+
+int FSGpio::SetEdge(Edge edge) {
+  // At this point we are assuming the gpio is set as input
+  char *path;
+  // Be sure that the edge value is set on none
+  asprintf(&path, "%sedge", gpio_.path);
+  FILE *fedge = fopen(path, "w");
+  free(path);
+
+  // Set the edge
+  fprintf(fedge, edge_map[edge]);
+  fclose(fedge);
+
+  return 0;
+}
+
+int FSGpio::TriggerOnActive() {
+  if (gpio_.active_high) {
+    SetEdge(RISING);
+  } else {
+    SetEdge(FALLING);
+  }
+}
+
+int FSGpio::TriggerOnInActive() {
+  if (gpio_.active_high) {
+    SetEdge(FALLING);
+  } else {
+    SetEdge(RISING);
+  }
+}
+
+int export_gpio(int gpio) {
+
+  const char *export_path = "/sys/class/gpio/export";
+  const int fd = open(export_path, O_WRONLY);
+
+  char buffer[15];
+  sprintf(buffer, "%d\n", gpio);
+  write(fd, buffer, sizeof(buffer));
+  close(fd);
+
+  return 0;
+}
+
+int FSGpio::GetValue() {
+
+  return 0;
+}
+
+int FSGpio::GetFd() { return gpio_.fd; }
+
+FSGpio::~FSGpio() {
+  free(gpio_.path);
+  close(gpio_.fd);
+}
+
+FSGpio::FSGpio(uint32_t gpio_def, Direction dir, bool active_high) {
+  // Trace back the gpio position in the fs
+  const uint32_t base = gpio_def & 0xfffff000;
+  const int gpio_idx = gpio_def & 0x00000fff;
+  const int base_idx = get_base_index(base);
+
+  gpio_.path = NULL;
+  gpio_.base = base_idx;
+  gpio_.idx = gpio_idx;
+  gpio_.active_high = active_high;
+  gpio_.fd = -1;
+  const int fs_idx = 32 * base_idx + gpio_idx;
+  export_gpio(fs_idx);
+  asprintf(&gpio_.path, "/sys/class/gpio/gpio%d/", fs_idx);
+
+  SetDir(dir);
 }

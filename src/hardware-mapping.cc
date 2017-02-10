@@ -169,6 +169,22 @@ bool HardwareMapping::InitializeHardware() {
       return false;
     }
   }
+
+  // Initialize the switches list
+  // NOTE: It's useful to always have them stored, so that we can
+  // implement a safety endswitch check during gcode programs execution.
+  // NOTE: You may be instancing multiple times the same gpio.. what now?
+  GPIODefinition gpio_def;
+  for (int i = 1; i <= NUM_SWITCHES; ++i) {
+    gpio_def = get_endstop_gpio_descriptor(i);
+    if (gpio_def == GPIO_NOT_MAPPED) {
+      switches_.push_back(NULL);
+      continue;
+    }
+    const bool trigger_on_high = \
+      trigger_level_[i - 1] ? true : false;
+    switches_.push_back(new FSGpio(gpio_def, FSGpio::INPUT, trigger_on_high));
+  }
   return true;
 }
 
@@ -260,6 +276,23 @@ HardwareMapping::AxisTrigger HardwareMapping::AvailableAxisSwitch(LogicAxis axis
   if (axis_to_min_endstop_[axis] != 0) result |= TRIGGER_MIN;
   if (axis_to_max_endstop_[axis] != 0) result |= TRIGGER_MAX;
   return (AxisTrigger) result;  // Safe to cast: all within range.
+}
+
+void HardwareMapping::GetAxisSwitchGpios(LogicAxis axis,
+                                      AxisTrigger requested_trigger,
+                                      FSGpio **gpio_min, FSGpio **gpio_max) {
+  fds[0] = fds[1] = -1;
+  if (!is_hardware_initialized_) return;
+
+  // For now let's ignore the requested trigger since it's already configured
+  if (requested_trigger & TRIGGER_MIN) {
+    const int switch_number = axis_to_min_endstop_[axis];
+    *gpio_min = switches_[switch_number];
+  }
+  if (requested_trigger & TRIGGER_MAX) {
+    const int switch_number = axis_to_max_endstop_[axis];
+    *gpio_max = switches_[switch_number];
+  }
 }
 
 bool HardwareMapping::TestAxisSwitch(LogicAxis axis, AxisTrigger requested_trigger) {

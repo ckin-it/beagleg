@@ -21,9 +21,11 @@
 #define BEAGLEG_HARDWARE_MAPPING_
 
 #include <stdint.h>
+#include <vector>
 
 #include "gcode-parser.h"  // For GCodeParserAxis
 #include "string-util.h"
+#include "generic-gpio.h"
 
 class ConfigParser;
 struct LinearSegmentSteps;
@@ -199,6 +201,10 @@ public:
   // if both ends are triggering.
   AxisTrigger AvailableAxisSwitch(LogicAxis axis);
 
+  // Returns the fds (min or max or both) for a given axis
+  void GetAxisSwitchGpios(LogicAxis axis, AxisTrigger requested_trigger,
+                          FSGpio **gpio_min, FSGpio **gpio_max);
+
   // Returns true if endstop for given axis has been reached.
   // "expected_trigger" can be any of MIN/MAX to test for that
   // particular end-trigger or ANY if we don't care which end is affected.
@@ -254,6 +260,9 @@ private:
   FixedArray<int, GCODE_NUM_AXES> axis_to_min_endstop_;
   FixedArray<int, GCODE_NUM_AXES> axis_to_max_endstop_;
   FixedArray<bool, NUM_SWITCHES> trigger_level_;
+
+  std::vector<FSGpio*> switches_;
+
   int estop_input_;
   int pause_input_;
   int start_input_;

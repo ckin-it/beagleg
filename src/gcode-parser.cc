@@ -1239,6 +1239,7 @@ const char *GCodeParser::Impl::handle_home(const char *line) {
     line = remaining_line;
   }
   if (homing_flags == 0) homing_flags = kAllAxesBitmap;
+
   callbacks->go_home(homing_flags);
 
   // Now update the world position

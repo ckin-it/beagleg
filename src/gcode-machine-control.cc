@@ -159,6 +159,8 @@ private:
   int motor_disable_timer_fd_;
   bool pause_enabled_;                  // Enabled via M120, disabled via M121
 
+  // Homing stuff
+  int homing_task_event_fd_;
   enum HomingState homing_state_;
 };
 
@@ -182,6 +184,7 @@ GCodeMachineControl::Impl::Impl(const MachineControlConfig &config,
     prog_speed_factor_(1),
     fan_disable_timer_fd_(-1),
     motor_disable_timer_fd_(-1),
+    homing_task_event_fd_(-1),
     homing_state_(HOMING_STATE_NEVER_HOMED) {
     pause_enabled_ = cfg_.enable_pause;
 }
@@ -808,33 +811,153 @@ void GCodeMachineControl::Impl::home_axis(enum GCodeParserAxis axis) {
   }
 }
 
+bool GCodeMachineControl::Impl::async_endstop_reached(FSGpio *sw, const int dir,
+                                                      const float speed) {
+  // This means that the gpio just triggered.
+  // Schedule Stop
+  const float kBackOffPos = 10;
+  const float kBackOffSpeed = speed / 10;
+
+  motor_ops_->RunAsyncStop([this]() {
+    planner_->ExternalSetPathIsHalted();
+    AxesRegister machine_pos;
+    GetRealtimeStatus(&machine_pos, NULL);
+    for (const GCodeParserAxis axis : AllAxes()) {
+      planner_->SetExternalPosition(axis, machine_pos[axis]);
+    }
+    // Update the parser as well
+    parser_->UpdateMachinePosition(machine_pos);
+  });
+
+  // Register the opposite trigger
+  sw->TriggerOnInactive();
+
+  event_server_->RunOnException(sw->GetFd(),
+    [this, min, fds, dir, kHomingSpeed] () {
+    return async_backoffed(min, dir, kHomingSpeed);
+  });
+
+  // Start backing off
+  planner_->DirectDrive(axis, dir * kBackOffPos, 0, kBackOffPosSpeed);
+  // Kill the task
+  return false;
+}
+
+bool GCodeMachineControl::Impl::async_backoffed() {
+  // Check the value
+  // inform that the axis has been homed with the axis_homed_event_fd_
+  const int event_counter = 1;
+  write(homing_task_event_fd_, &event_counter, sizeof(event_counter));
+  return false;
+}
+
+bool GCodeMachineControl::Impl::async_home_task(AxisBitmap_t axes_bitmap) {
+
+  if (homing_order_iterator_ == cfg_.home_order.end()) {
+    // Ok, we are done
+    Log_debug("Closing the homing task");
+    homing_state_ = HOMING_STATE_HOMED;
+    close(homing_task_event_fd_);
+    homing_task_event_fd_ = -1;
+    parser_->EnableAsyncStream();
+    // Kill the task
+    return false;
+  }
+
+  // Next axis to home
+  const enum GCodeParserAxis axis = gcodep_letter2axis(axis_letter);
+  const HardwareMapping::AxisTrigger trigger = cfg_.homing_trigger[axis];
+  if (trigger == HardwareMapping::TRIGGER_NONE){
+    // Let's skip this axis for now
+    ++homing_order_iterator_;
+    return true;  // TODO: warn that there is no swich ? Should we pretend go back?
+  }
+
+  const float home_pos = ((trigger == HardwareMapping::TRIGGER_MAX)
+                          ? cfg_.move_range_mm[axis]
+                          : 0.0f);
+
+  if (hardware_mapping_->IsHardwareSimulated()) {
+    // Let's set the new external position
+    planner_->SetExternalPosition(axis, home_pos);
+    ++homing_order_iterator_;
+    return true;
+  }
+
+  planner_->BringPathToHalt();
+  FSGpio *min;
+  FSGpio *max;
+  hardware_mapping_->GetAxisSwitchFd(axis, trigger, &min, &max);
+
+  // Set the edge
+  min->TriggerOnActive();
+  max->TriggerOnActive();
+
+  int fds[2];
+  fds[0] = min->GetFd();
+  fds[1] = max->GetFd();
+
+  endstop_found_ = false;
+
+  const float kHomingSpeed = 10; // mm/sec  (make configurable ?)
+  const int dir = trigger == HardwareMapping::TRIGGER_MIN ? -1 : 1;
+
+  // Homing: second level
+  // Schedule the two triggers for min and max (if both present)
+  if (fds[0] > 0) event_server_->RunOnException(fds[0],
+    [this, min, fds, dir, kHomingSpeed] () {
+    if (endstop_found_) return false;
+    endstop_found_ = true;
+    // Remove the other trigger
+    ScheduleDelete(fds[1]);
+    return async_reach_endstop(min, dir, kHomingSpeed);
+  });
+
+  if (fds[1] > 0) event_server_->RunOnException(fds[1],
+      [this, max, fds, dir, kHomingSpeed] () {
+    if (endstop_found_) return false;
+    endstop_found_ = true;
+    // Remove the other trigger
+    ScheduleDelete(fds[0]);
+    return async_reach_endstop(max, dir, kHomingSpeed);
+  });
+
+  // Start moving
+  planner_->DirectDrive(axis, -dir * home_pos, 0, kHomingSpeed);
+
+  motor_ops_->RunOnEmptyQueue([this]() {
+    if (!endstop_found_) mprintf("// G30: max probe reached\n");
+  }
+
+  ++homing_order_iterator_;
+
+  // Let's shut down this task for a bit
+  const int event_counter = 0;
+  write(homing_task_event_fd_, &event_counter, sizeof(event_counter));
+
+  // But let's keep it in the handlers list
+  return true;
+}
+
 void GCodeMachineControl::Impl::go_home(AxisBitmap_t axes_bitmap) {
-  parser_->DisableAsyncStream(true);
+  assert(homing_task_event_fd_ < 0);
   planner_->BringPathToHalt();
 
-  for (const char axis_letter : cfg_.home_order) {
-    const enum GCodeParserAxis axis = gcodep_letter2axis(axis_letter);
-    if (axis == GCODE_NUM_AXES || !(axes_bitmap & (1 << axis)))
-      continue;
-    motor_ops_->EnableDirectEnqueue(true);
-    home_axis(axis);
-    motor_ops_->EnableDirectEnqueue(false);
-  }
-  homing_state_ = HOMING_STATE_HOMED;
+  // Disable the async stream and flush
+  parser_->DisableAsyncStream(true);
 
-  // Since during home we did some steps, let's count them as an offset
-  // when evaluating the position
-  int motors_steps[HardwareMapping::NUM_MOTORS];
-  int axes_steps[GCODE_NUM_AXES];
-  motor_ops_->GetRealtimeStatus(motors_steps, NULL);
-  hardware_mapping_-> \
-    AssignMotorsStepsToAxis(axes_steps, motors_steps);
-  for (const GCodeParserAxis axis : AllAxes()) {
-    if (axis == GCODE_NUM_AXES || !(axes_bitmap & (1 << axis)))
-      continue;
-    homed_motors_offset_[axis] = axes_steps[axis];
-  }
-  parser_->EnableAsyncStream();
+  // let's inititialize the homing task event
+  homing_task_event_fd_ = eventfd(1, 0);
+  if (event_fd_ < 0)
+    perror("eventfd()");
+
+  homing_order_iterator_ = cfg.home_order.begin();
+
+  // Homing: First level
+  // Schedule the task that run the homing sequence for each axis.
+  event_server_.RunOnReadable(homing_task_event_fd_, [this, axes_bitmap]() {
+    return async_home_task(axes_bitmap);
+  });
 }
 
 bool GCodeMachineControl::Impl::probe_axis(float feedrate,

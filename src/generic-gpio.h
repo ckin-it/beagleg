@@ -30,4 +30,49 @@ void clr_gpio(uint32_t gpio_def);
 bool map_gpio();
 void unmap_gpio();
 
+class FSGpio {
+public:
+
+  typedef enum direction {
+    INPUT,
+    OUTPUT
+  } Direction;
+
+  typedef enum edge {
+    NONE,
+    RISING,
+    FALLING,
+    BOTH
+  } Edge;
+
+  FSGpio(uint32_t gpio_def, Direction dir, bool active_high);
+  ~FSGpio();
+
+  int GetValue();
+  int GetFd();
+  int TriggerOnActive();
+  int TriggerOnInactive();
+
+private:
+
+  int SetDir(Direction dir);
+  int SetEdge(Edge edge);
+
+  typedef struct gpio_desc {
+    char *path;
+    int idx;
+    int base;
+    int fd;
+    bool active_high;
+    gpio_desc() {}
+    gpio_desc(const gpio_desc& source) : idx(source.idx), base(source.base),
+                                         fd(source.fd) {
+      asprintf(&path, source.path);
+    }
+  } GpioDesc;
+
+  GpioDesc gpio_;
+
+};
+
 #endif // __GENERIC_GPIO_H

@@ -457,14 +457,14 @@ int main(int argc, char *argv[]) {
   }
 
   // Listen port bound, GPIO initialized. Ready to drop privileges.
-  if (geteuid() == 0 && strlen(privs) > 0) {
-    if (drop_privileges(privs)) {
-      Log_info("Dropped privileges to '%s'", privs);
-    } else {
-      Log_error("Exiting. Could not drop privileges to %s", privs);
-      return 1;
-    }
-  }
+  // if (geteuid() == 0 && strlen(privs) > 0) {
+  //   if (drop_privileges(privs)) {
+  //     Log_info("Dropped privileges to '%s'", privs);
+  //   } else {
+  //     Log_error("Exiting. Could not drop privileges to %s", privs);
+  //     return 1;
+  //   }
+  // }
   Log_info("Running with PID %d", getpid());
 
   MotionQueueMotorOperations motor_operations(motion_backend, &event_server);

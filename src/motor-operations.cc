@@ -175,9 +175,11 @@ void MotionQueueMotorOperations::EnqueueInternal(const LinearSegmentSteps &param
     // Force the motion queue to buffer all the segments
     backend_->ForceBufferized(true);
     backend_->Enqueue(&new_element);
+    Log_debug("Bufferizing shit");
     new FDTimer(ENABLE_DELAY, event_server_, [this]() {
       // Ok we can start for real now, disable the forced bufferization
       // And start the shoveler
+      Log_debug("Started!");
       backend_->ForceBufferized(false);
     });
   }

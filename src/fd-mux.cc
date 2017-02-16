@@ -80,7 +80,7 @@ void FDMultiplexer::Loop() {
             break;
         }
 
-        int fds_ready = select(maxfd, &read_fds, &write_fds, nullptr, nullptr);
+        int fds_ready = select(maxfd, &read_fds, &write_fds, &exception_fds, nullptr);
         if (fds_ready < 0) {
             perror("select() failed");
             break;
@@ -124,7 +124,8 @@ void FDMultiplexer::Loop() {
 
         // Handle exceptions
         for (const auto &it : e_handlers_) {
-            if (FD_ISSET(it.first, &exceptions_fds)) {
+            if (FD_ISSET(it.first, &exception_fds)) {
+                Log_debug("no fds");
                 const bool retrigger = it.second();
                 if (!retrigger) {
                     to_delete_e_.push_back(it.first);

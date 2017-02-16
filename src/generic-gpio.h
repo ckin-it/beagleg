@@ -49,6 +49,7 @@ public:
   ~FSGpio();
 
   int GetValue();
+  int ConsumeTrigger();
   int GetFd();
   int TriggerOnActive();
   int TriggerOnInactive();

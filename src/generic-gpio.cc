@@ -276,7 +276,7 @@ static const char *edge_map[] = {
   "none\n",
   "rising\n",
   "falling\n",
-  "both"
+  "both\n"
 };
 
 int FSGpio::SetEdge(Edge edge) {
@@ -285,29 +285,35 @@ int FSGpio::SetEdge(Edge edge) {
   // Be sure that the edge value is set on none
   asprintf(&path, "%sedge", gpio_.path);
   FILE *fedge = fopen(path, "w");
+  Log_debug("MA TIPO DIO CAN? %s : %s", path, edge_map[edge]);
   free(path);
 
   // Set the edge
   fprintf(fedge, edge_map[edge]);
+
   fclose(fedge);
 
   return 0;
 }
 
 int FSGpio::TriggerOnActive() {
+  ConsumeTrigger();
   if (gpio_.active_high) {
     SetEdge(RISING);
   } else {
     SetEdge(FALLING);
   }
+  return 0;
 }
 
-int FSGpio::TriggerOnInActive() {
+int FSGpio::TriggerOnInactive() {
+  ConsumeTrigger();
   if (gpio_.active_high) {
     SetEdge(FALLING);
   } else {
     SetEdge(RISING);
   }
+  return 0;
 }
 
 int export_gpio(int gpio) {
@@ -328,6 +334,13 @@ int FSGpio::GetValue() {
   return 0;
 }
 
+int FSGpio::ConsumeTrigger() {
+  char v[2];
+  lseek(gpio_.fd, 0, SEEK_SET);
+  read(gpio_.fd, &v, sizeof(v));
+  return 0;
+}
+
 int FSGpio::GetFd() { return gpio_.fd; }
 
 FSGpio::~FSGpio() {
@@ -341,12 +354,15 @@ FSGpio::FSGpio(uint32_t gpio_def, Direction dir, bool active_high) {
   const int gpio_idx = gpio_def & 0x00000fff;
   const int base_idx = get_base_index(base);
 
+  Log_debug("Registered %x", gpio_def);
+
   gpio_.path = NULL;
   gpio_.base = base_idx;
   gpio_.idx = gpio_idx;
   gpio_.active_high = active_high;
   gpio_.fd = -1;
   const int fs_idx = 32 * base_idx + gpio_idx;
+  Log_debug("INDEX %d", fs_idx);
   export_gpio(fs_idx);
   asprintf(&gpio_.path, "/sys/class/gpio/gpio%d/", fs_idx);
 

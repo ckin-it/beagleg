@@ -622,7 +622,8 @@ int Planner::Impl::DirectDrive(GCodeParserAxis axis, float distance,
   assign_steps_to_motors(&move_command, axis, segment_move_steps);
 
   motor_ops_->Enqueue(move_command);
-  motor_ops_->WaitQueueEmpty();
+  Log_debug("Steps %d", segment_move_steps);
+  //motor_ops_->WaitQueueEmpty();
 
   return segment_move_steps;
 }

@@ -281,17 +281,17 @@ HardwareMapping::AxisTrigger HardwareMapping::AvailableAxisSwitch(LogicAxis axis
 void HardwareMapping::GetAxisSwitchGpios(LogicAxis axis,
                                       AxisTrigger requested_trigger,
                                       FSGpio **gpio_min, FSGpio **gpio_max) {
-  fds[0] = fds[1] = -1;
+  *gpio_min = *gpio_max = NULL;
   if (!is_hardware_initialized_) return;
 
   // For now let's ignore the requested trigger since it's already configured
   if (requested_trigger & TRIGGER_MIN) {
     const int switch_number = axis_to_min_endstop_[axis];
-    *gpio_min = switches_[switch_number];
+    *gpio_min = switches_[switch_number - 1];
   }
   if (requested_trigger & TRIGGER_MAX) {
     const int switch_number = axis_to_max_endstop_[axis];
-    *gpio_max = switches_[switch_number];
+    *gpio_max = switches_[switch_number - 1];
   }
 }
 

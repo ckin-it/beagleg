@@ -9,6 +9,10 @@
 # Currently supported BUMPS, CRAMPS, and VGEN5
 BEAGLEG_HARDWARE_TARGET?=BUMPS
 
+# Additional macros, for example to disable the pwm support simply add
+# -D_DISABLE_PWM_TIMERS
+CONFIG_FLAGS?=
+
 # In case you cross compile this on a different architecture, uncomment this
 # and set the prefix. Or simply set the environment variable.
 #CROSS_COMPILE?=arm-arago-linux-gnueabi-
@@ -121,8 +125,8 @@ grpc-control-server.o: grpc-control-server.cc $(PROTOS)
 	@$(CROSS_COMPILE)$(CXX) $(CXXFLAGS) -MM $< > $@.d
 
 %.o: %.cc compiler-flags
-	$(CROSS_COMPILE)$(CXX) $(CXXFLAGS)  -c  $< -o $@
-	@$(CROSS_COMPILE)$(CXX) $(CXXFLAGS) -MM $< > $@.d
+	$(CROSS_COMPILE)$(CXX) $(CXXFLAGS) $(CONFIG_FLAGS) -c  $< -o $@
+	@$(CROSS_COMPILE)$(CXX) $(CXXFLAGS) $(CONFIG_FLAGS) -MM $< > $@.d
 
 %_test.o: %_test.cc compiler-flags
 	$(CROSS_COMPILE)$(CXX)  $(GTEST_INCLUDE) $(CXXFLAGS) -c  $< -o $@

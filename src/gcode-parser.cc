@@ -2077,6 +2077,7 @@ void GCodeParser::Impl::EnableAsyncStream() {
     CloseAsyncConnection();
     return;
   }
+
   // The ParseBufferedLines will start after we are sure ther is no
   // remaining line in the reader_
   event_server_->RunOnReadable(event_fd_, [this](){

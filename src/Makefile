@@ -114,8 +114,8 @@ $(PRU_BIN) : motor-interface-constants.h \
              $(CAPE_INCLUDE)/beagleg-pin-mapping.h \
 	     $(CAPE_INCLUDE)/pru-io-routines.hp
 
-%.pb.cc %.pb.h %.grpc.pb.cc %.grpc.pb.h: %.proto
-	protoc --cpp_out=. --grpc_out=. --plugin=protoc-gen-grpc=`which grpc_cpp_plugin` $<
+%.pb.cc %.pb.h %.grpc.pb.cc %.grpc.pb.h: protos/%.proto
+	protoc -Iprotos --cpp_out=. --grpc_out=. --plugin=protoc-gen-grpc=`which grpc_cpp_plugin` $<
 
 %_test: %_test.o $(OBJECTS) $(TEST_FRAMEWORK_OBJECTS) compiler-flags
 	$(CROSS_COMPILE)$(CXX) -o $@ $< $(OBJECTS) $(PRUSS_LIBS) $(LDFLAGS) $(TEST_FRAMEWORK_OBJECTS)

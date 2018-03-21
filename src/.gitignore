@@ -7,3 +7,5 @@ compiler-flags
 gtest
 speed-control-client
 pause-client
+*.pb.h
+*.pb.cc

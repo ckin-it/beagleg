@@ -19,8 +19,8 @@
 #ifndef _BEAGLEG_GCODE_MACHINE_CONTROL_H_
 #define _BEAGLEG_GCODE_MACHINE_CONTROL_H_
 
-#include "gcode-parser.h"
-#include "container.h"
+#include "gcode-parser/gcode-parser.h"
+#include "common/container.h"
 #include "hardware-mapping.h"
 
 #include <string>
@@ -28,7 +28,7 @@
 class MotorOperations;
 class ConfigParser;
 class Spindle;
-typedef FixedArray<float, GCODE_NUM_AXES> FloatAxisConfig;
+typedef AxesRegister FloatAxisConfig;
 
 /* Configuration constants for the controller.
  * Parameters in the arrays are always indexed by logical axes, e.g. AXIS_X.
@@ -49,6 +49,7 @@ struct MachineControlConfig {
 
   float speed_factor;         // Multiply feed with. Should be 1.0 by default.
   float threshold_angle;      // Threshold angle to ignore speed changes
+  float speed_tune_angle;     // Angle added to the angle between vectors for speed tuning
 
   std::string home_order;        // Order in which axes are homed.
 
@@ -60,6 +61,9 @@ struct MachineControlConfig {
   bool acknowledge_lines;       // Respond w/ 'ok' on each command on msg_stream.
   bool require_homing;          // Require homing before any moves.
   bool range_check;             // Do machine limit checks. Default 1.
+  std::string clamp_to_range;   // Clamp these axes to machine range before
+                                // range check. Dangerous.
+                                // Support only "" or "Z" right now.
   bool debug_print;             // Print step-tuples to output_fd if 1.
   bool synchronous;             // Don't queue, wait for command to finish if 1.
   bool enable_pause;            // Enable pause switch detection. Default 0.
@@ -68,6 +72,16 @@ struct MachineControlConfig {
 // A class that controls a machine via gcode.
 class GCodeMachineControl {
  public:
+  enum class EStopState {  NONE,  SOFT,  HARD  };
+
+  // The three levels of homing confidence. If we ever switch off
+  // power to the motors after homing, we can't be sure.
+  enum class HomingState {
+    NEVER_HOMED,
+    HOMED_BUT_MOTORS_UNPOWERED,
+    HOMED
+  };
+
   // Factor to create a GCodeMachineControl.
   // The MotorOperations provide the low-level motor control ops.
   // msg_stream, if non-NULL, sends back return messages on the GCode channel.
@@ -91,6 +105,22 @@ class GCodeMachineControl {
   // Return the receiver for parse events. The caller must not assume ownership
   // of the returned pointer.
   GCodeParser::EventReceiver *ParseEventReceiver();
+
+  // Return the E-Stop status.
+  // Can only be called in the same thread that also handles gcode updates.
+  EStopState GetEStopStatus();
+
+  // Return the Homing status.
+  // Can only be called in the same thread that also handles gcode updates.
+  HomingState GetHomeStatus();
+
+  // Return the motors enabled status.
+  // Can only be called in the same thread that also handles gcode updates.
+  bool GetMotorsEnabled();
+
+  // Return current position relative to origin.
+  // Can only be called in the same thread that also handles gcode updates.
+  void GetCurrentPosition(AxesRegister *pos);
 
  private:
   class Impl;

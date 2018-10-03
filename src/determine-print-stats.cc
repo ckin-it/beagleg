@@ -24,8 +24,9 @@
 #include <stdlib.h>
 #include <strings.h>
 
+#include "gcode-parser/gcode-parser.h"
+
 #include "gcode-machine-control.h"
-#include "gcode-parser.h"
 #include "motor-operations.h"
 #include "hardware-mapping.h"
 #include "spindle-control.h"
@@ -41,47 +42,52 @@ public:
     : stats_(stats), delegatee_(delegatee) {
   }
 
-  virtual void gcode_start(GCodeParser *p) { delegatee_->gcode_start(p); }
-  virtual void gcode_finished(bool eos) { delegatee_->gcode_finished(eos); }
+  // GCodeParser::EventReceiver callbacks
+  void gcode_start(GCodeParser *p) final { delegatee_->gcode_start(p); }
+  void gcode_finished(bool eos) final { delegatee_->gcode_finished(eos); }
 
   // GCode parser event receivers, that forward calls to the delegate
   // but also determine relevant height information.
-  virtual void set_speed_factor(float f) { delegatee_->set_speed_factor(f);  }
-  virtual void set_temperature(float f) { delegatee_->set_temperature(f); }
-  virtual void set_fanspeed(float speed) { delegatee_->set_fanspeed(speed);  }
-  virtual void wait_temperature() { delegatee_->wait_temperature(); }
-  virtual void motors_enable(bool b) { delegatee_->motors_enable(b); }
-  virtual void go_home(AxisBitmap_t axes) { /* ignore */ }
-  virtual void inform_origin_offset(const AxesRegister& axes) {
-    delegatee_->inform_origin_offset(axes);
+  void set_speed_factor(float f) final { delegatee_->set_speed_factor(f);  }
+  void set_temperature(float f) final { delegatee_->set_temperature(f); }
+  void set_fanspeed(float speed) final { delegatee_->set_fanspeed(speed);  }
+  void wait_temperature() final { delegatee_->wait_temperature(); }
+  void motors_enable(bool b) final { delegatee_->motors_enable(b); }
+  void go_home(AxisBitmap_t axes) final { /* ignore */ }
+  void inform_origin_offset(const AxesRegister& axes, const char *n) final {
+    delegatee_->inform_origin_offset(axes, n);
   }
 
-  virtual void dwell(float value) {
+  void dwell(float value) final {
     stats_->total_time_seconds += value / 1000.0f;
     // We call the original dell() with zero time as we don't want to spend _real_ time.
     delegatee_->dwell(0);
   }
 
-  virtual bool rapid_move(float feed, const AxesRegister &axes) {
+  bool rapid_move(float feed, const AxesRegister &axes) final {
     update_coordinate_stats(axes);
     return delegatee_->rapid_move(feed, axes);
   }
-  virtual bool coordinated_move(float feed, const AxesRegister &axes) {
+  bool coordinated_move(float feed, const AxesRegister &axes) final {
     update_coordinate_stats(axes);
     return delegatee_->coordinated_move(feed, axes);
   }
 
-  virtual const char *unprocessed(char letter, float value, const char *remain) {
+  const char *unprocessed(char letter, float value, const char *remain) final {
     return delegatee_->unprocessed(letter, value, remain);
   }
 
 private:
+  static inline void set_min_max(float value, float *min, float *max) {
+    if (value < *min) *min = value;
+    if (value > *max) *max = value;
+  }
   void update_coordinate_stats(const AxesRegister &axis) {
-    stats_->last_x = axis[AXIS_X];
-    stats_->last_y = axis[AXIS_Y];
-    stats_->last_z = axis[AXIS_Z];
+    set_min_max(axis[AXIS_X], &stats_->x_min, &stats_->x_max);
+    set_min_max(axis[AXIS_Y], &stats_->y_min, &stats_->y_max);
+    set_min_max(axis[AXIS_Z], &stats_->z_min, &stats_->z_max);
     if (axis[AXIS_E] > stats_->filament_len) {
-      stats_->last_z_extruding = stats_->last_z;
+      stats_->last_z_extruding = axis[AXIS_Z];
     }
     stats_->filament_len = axis[AXIS_E];
   }
@@ -94,7 +100,7 @@ class StatsMotorOperations : public MotorOperations {
 public:
   StatsMotorOperations(BeagleGPrintStats *stats) : print_stats_(stats) {}
 
-  virtual void Enqueue(const LinearSegmentSteps &param) {
+  void Enqueue(const LinearSegmentSteps &param) final {
     int max_steps = 0;
     for (int i = 0; i < BEAGLEG_NUM_MOTORS; ++i) {
       int steps = abs(param.steps[i]);
@@ -107,8 +113,10 @@ public:
     //printf("HZ:v0=%7.1f v1=%7.1f steps=%d\n", param.v0, param.v1, max_steps);
   }
 
-  virtual void MotorEnable(bool on) {}
-  virtual void WaitQueueEmpty() {}
+  void MotorEnable(bool on) final {}
+  void WaitQueueEmpty() final {}
+  bool GetPhysicalStatus(PhysicalStatus *status) final { return false; }
+  void SetExternalPosition(int axis, int pos) final {}
 
 private:
   BeagleGPrintStats *const print_stats_;
@@ -119,9 +127,10 @@ bool determine_print_stats(int input_fd, const MachineControlConfig &config,
                            FILE *msg_out,
                            struct BeagleGPrintStats *result) {
   bzero(result, sizeof(*result));
-
+  result->x_min = 1e7;
+  result->y_min = 1e7;
+  result->y_min = 1e7;
   HardwareMapping hardware;  // We never initialize, just sim mode.
-  Spindle spindle;
 
   // Motor control that just determines the time spent turning the motor.
   // We do that by intercepting the motor operations by replacing the
@@ -129,7 +138,7 @@ bool determine_print_stats(int input_fd, const MachineControlConfig &config,
   StatsMotorOperations stats_motor_ops(result);
   GCodeMachineControl *machine_control
     = GCodeMachineControl::Create(config, &stats_motor_ops,
-                                  &hardware, &spindle, NULL);
+                                  &hardware, nullptr, nullptr);
   if (!machine_control)
     return false;
 
@@ -140,8 +149,8 @@ bool determine_print_stats(int input_fd, const MachineControlConfig &config,
   GCodeParser::Config parser_cfg;
   GCodeParser::Config::ParamMap parameters;
   parser_cfg.parameters = &parameters;
-  GCodeParser parser(parser_cfg, &stats_event_receiver, false);
-  const bool success = parser.ParseStream(input_fd, msg_out) == 0
+  GCodeParser parser(parser_cfg, &stats_event_receiver);
+  const bool success = parser.ReadFile(fdopen(input_fd, "r"), msg_out)
     && parser.error_count() == 0;
   delete machine_control;
   return success;

@@ -25,49 +25,12 @@ kernel).
 
 The main `machine-control` program is parsing G-Code, extracting axes moves and
 enqueues them to the realtime unit. It can receive G-Code from a file or
-socket (you can just telnet to it for an interactive session, how cool is that?).
+socket (you can just telnet to it for an interactive session, how
+cool is that?).
 
 ## Install
-### System configuration
-In order to run BeagleG on your BeagleBone you will need to be sure
-that uio_pruss kernel module has been installed and loaded in the kernel.
-You can easily test if the module it's available by running:
-
-    if lsmod | grep "uio_pruss" &> /dev/null ; then echo "The kernel is BeagleG ready!"; fi
-
-then just load it using:
-
-    sudo modprobe uio_pruss
-
-or add it to /etc/modules to make it persistent:
-
-    sudo sh -c 'echo uio_pruss > /etc/modules'
-
-if the uio_pruss module is not available, you might be running a 4.x kernel
-from TI; they are experimenting with a new way to connect to the PRU (remoteproc)
-which is not marked stable or ready yet, and is not backward compatible with
-older kernels still commonly run on BeagleBones, so we can't use it in BeagleG
-yet. You can see that if you ask `uname -r` returns something like
-`4.4.12-ti-r32` - with a `ti` after the version number.
-
-In that case, you will need to
-[change your kernel version](http://elinux.org/BeagleBoardDebian#Install_Latest_Kernel_Image) to a bone prefix one (e.g. `4.4.14-bone`).
-
-### Build
-To build, we need the BeagleG code and the PRU assembler with supporting library.
-The BeagleG repository is set up in a way that the PRU assembler is checked out via
-a git sub-module to make it simple.
-
-Clone the BeagleG repository with the `--recursive` flag to get this sub-module
-
-     git clone --recursive https://github.com/hzeller/beagleg.git
-
-(If you are a github user, you might want to use the git protocol).
-
-Then just
-
-     cd beagleg
-     make
+For system configuration and building the `machine-control` binary, see
+[INSTALL.md](./INSTALL.md).
 
 ## Getting started
 Before you can use beagleg and get meaningful outputs on the GPIO pins,
@@ -78,6 +41,8 @@ to install the device overlay. You find it in the `hardware/` subdirectory.
     sudo hardware/start-devicetree-overlay.sh hardware/BUMPS/BeagleG.dts
 
 See the [Hardware page](./hardware) how to enable the cape at boot time.
+(Note: this section will be simpler once we switched entirely to universal
+cape).
 
 ## Machine control binary
 To control a machine with G-Code, use the `machine-control` binary.
@@ -90,6 +55,7 @@ Options:
   -p, --port <port>          : Listen on this TCP port for GCode.
   -b, --bind-addr <bind-ip>  : Bind to this IP (Default: 0.0.0.0).
   -l, --logfile <logfile>    : Logfile to use. If empty, messages go to syslog (Default: /dev/stderr).
+      --param <paramfile>    : Parameter file to use.
   -d, --daemon               : Run as daemon.
       --priv <uid>[:<gid>]   : After opening GPIO: drop privileges to this (default: daemon:daemon)
       --help                 : Display this help text and exit.
@@ -99,8 +65,13 @@ Mostly for testing and debugging:
   -n                         : Dryrun; don't send to motors, no GPIO or PRU needed (Default: off).
   -P                         : Verbose: Show some more debug output (Default: off).
   -S                         : Synchronous: don't queue (Default: off).
-      --loop[=count]         : Loop file number of times (no value: forever; equal sign with value important.)
       --allow-m111           : Allow changing the debug level with M111 (Default: off).
+
+Segment acceleration tuning:
+     --threshold-angle       : Specifies the threshold angle used for segment acceleration (Default: 10 degrees).
+     --speed-tune-angle      : Specifies the angle used for proportional speed-tuning. (Default: 60 degrees)
+
+                               The --threshold-angle + --speed-tune-angle must be less than 90 degrees.
 
 Configuration file overrides:
      --homing-required       : Require homing before any moves (require-homing = yes).
@@ -119,12 +90,14 @@ More details about the G-Code code parsed and handled can be found in the
 ### Examples
 
 For testing your motor settings, you might initially just have a simple
-file that you want to loop over:
+file:
 
-    sudo ./machine-control -c my.config -f 10 --loop myfile.gcode
+    sudo ./machine-control -c my.config -f 10 myfile.gcode
 
-Output the file `myfile.gcode` in 10x the original speed, repeat this file
-forever (say you want to stress-test).
+Output the file `myfile.gcode` in 10x the original speed (say you want to
+stress-test). Note, the factor will only scale feedrate, but the machine will
+always obey the machine constraints with maximum feed and acceleration given in
+the configuration file.
 
     echo "G1 X100 F10000 G1 X0 F1000" | sudo ./machine-control /dev/stdin
 
@@ -136,7 +109,7 @@ little tweaks.
 
 Listen on TCP port 4444 for incoming connections and execute G-Codes over this
 line. So you could use `telnet beaglebone-hostname 4444` to have an interactive
-session or send a file with `socat`:
+session or send a file simple via `socat` from a remote machine:
 
      cat myfile.gcode | socat -t5 - TCP4:beaglebone-hostname:4444
 
@@ -192,13 +165,13 @@ these axes to motor drivers provided by the cape (`motor_1`, `motor_2`,...)
 and end switches (`switch_1`, `switch_2`,...) to logical functions
 (e.g. `min_x`). See the [annotated config file](./sample.config).
 
-## Developing
+## Development
 
 If you want to use the nicely seprated sub-APIs of BeagleG programmatically
 or want to get involved in the development, check
 the [Development](./Development.md) page.
 
-<a href="Development.md"><img src="./img/machine-control.png" width="128"/></a>
+<a href="Development.md"><img src="./img/machine-control.png" width="128"/><img src="./img/sample-gcode2ps-isometric.png" width="140"/></a>
 
 ## License
 BeagleG is free software: you can redistribute it and/or modify

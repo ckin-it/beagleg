@@ -8,11 +8,12 @@
 
 #include <gtest/gtest.h>
 
-#include "gcode-parser.h"
-#include "hardware-mapping.h"
-#include "logging.h"
-#include "motor-operations.h"
+#include "gcode-parser/gcode-parser.h"
+#include "common/logging.h"
+
 #include "gcode-machine-control.h"
+#include "hardware-mapping.h"
+#include "motor-operations.h"
 
 // Using different steps/mm speeds results in problems right now.
 // TODO: This should work being set to 1
@@ -22,14 +23,16 @@
 static void InitTestConfig(struct MachineControlConfig *c) {
   float steps_per_mm = 1000;
   for (int i = 0; i <= AXIS_Z; ++i) {
-    c->steps_per_mm[i] = steps_per_mm;
+    const GCodeParserAxis axis = (GCodeParserAxis) i;
+    c->steps_per_mm[axis] = steps_per_mm;
     // We do different steps/mm to detect problems when going between
     // euclidian space and step-space.
     steps_per_mm *= SPEED_STEP_FACTOR;
-    c->acceleration[i] = 100;  // mm/s^2
-    c->max_feedrate[i] = 10000;
+    c->acceleration[axis] = 100;  // mm/s^2
+    c->max_feedrate[axis] = 10000;
   }
   c->threshold_angle = 0;
+  c->speed_tune_angle = 0;
   c->require_homing = false;
 }
 
@@ -38,7 +41,7 @@ public:
   FakeMotorOperations(const MachineControlConfig &config)
     : config_(config) {}
 
-  virtual void Enqueue(const LinearSegmentSteps &segment) {
+  void Enqueue(const LinearSegmentSteps &segment) final {
 #if 0
     // Prepare for printing.
 
@@ -79,8 +82,10 @@ public:
     collected_.push_back(segment);
   }
 
-  virtual void MotorEnable(bool on)  {}
-  virtual void WaitQueueEmpty() {}
+  void MotorEnable(bool on) final {}
+  void WaitQueueEmpty() final {}
+  bool GetPhysicalStatus(PhysicalStatus *status) final { return false; }
+  void SetExternalPosition(int axis, int steps) final {}
 
   const std::vector<LinearSegmentSteps> &segments() { return collected_; }
 
@@ -94,10 +99,11 @@ private:
     const float dy = seg->steps[AXIS_Y] / config_.steps_per_mm[AXIS_Y];
     const float dz = seg->steps[AXIS_Z] / config_.steps_per_mm[AXIS_Z];
     const float hypotenuse = sqrtf(dx*dx + dy*dy + dz*dz);
-    int defining_axis = AXIS_X;
+    GCodeParserAxis defining_axis = AXIS_X;
     for (int i = AXIS_Y; i < AXIS_Z; ++i) {
-      if (abs(seg->steps[i]) > abs(seg->steps[defining_axis]))
-        defining_axis = i;
+      const GCodeParserAxis a = (GCodeParserAxis) i;
+      if (abs(seg->steps[a]) > abs(seg->steps[defining_axis]))
+        defining_axis = a;
     }
 
     // The hypotenuse is faster than each of the sides, so its speed is
@@ -124,12 +130,14 @@ public:
   // If angle or config is not set, assumes default. Takes ownership of
   // config.
   PlannerHarness(float threshold_angle = 0,
+                 float speed_tune_angle = 0,
                  MachineControlConfig *config = NULL)
     : config_(config ? config : new MachineControlConfig()),
       motor_ops_(*config_), finished_(false) {
     if (!config) {
       InitTestConfig(config_);
       config_->threshold_angle = threshold_angle;
+      config_->speed_tune_angle = speed_tune_angle;
     }
     simulated_hardware_.AddMotorMapping(AXIS_X, 1, false);
     simulated_hardware_.AddMotorMapping(AXIS_Y, 2, false);
@@ -257,7 +265,7 @@ static void parametrizedAxisClamping(GCodeParserAxis defining_axis,
   config->steps_per_mm[AXIS_Y] = 1000;
   config->steps_per_mm[defining_axis] *= 12.345;
 
-  PlannerHarness plantest(0, config);
+  PlannerHarness plantest(0, 0, config);
 
   // Let's do a diagonal move.
   // First: AXIS_X shall be dominant
@@ -308,6 +316,7 @@ TEST(PlannerTest, SimpleMove_AxisSpeedLimitClampsOverallSpeed_YY) {
 }
 
 static std::vector<LinearSegmentSteps> DoAngleMove(float threshold_angle,
+                                                   float speed_tune_angle,
                                                    float start_angle,
                                                    float delta_angle) {
   const float kFeedrate = 3000.0f;  // Never reached. We go from accel to decel.
@@ -315,7 +324,7 @@ static std::vector<LinearSegmentSteps> DoAngleMove(float threshold_angle,
   fprintf(stderr, "DoAngleMove(%.1f, %.1f, %.1f)\n",
           threshold_angle, start_angle, delta_angle);
 #endif
-  PlannerHarness plantest(threshold_angle);
+  PlannerHarness plantest(threshold_angle, speed_tune_angle);
   const float kSegmentLen = 100;
 
   float radangle = 2 * M_PI * start_angle / 360;
@@ -335,7 +344,9 @@ static std::vector<LinearSegmentSteps> DoAngleMove(float threshold_angle,
 
 TEST(PlannerTest, CornerMove_90Degrees) {
   const float kThresholdAngle = 5.0f;
-  std::vector<LinearSegmentSteps> segments = DoAngleMove(kThresholdAngle, 0, 90);
+  const float kSpeedTuneAngle = 0.0f;
+  std::vector<LinearSegmentSteps> segments =
+    DoAngleMove(kThresholdAngle, kSpeedTuneAngle, 0, 90);
   ASSERT_EQ(4, (int)segments.size());
 
   // This is a 90 degree move, we expect to slow down all the way to zero
@@ -345,10 +356,11 @@ TEST(PlannerTest, CornerMove_90Degrees) {
 }
 
 void testShallowAngleAllStartingPoints(float threshold, float testing_angle) {
+  const float kSpeedTuneAngle = 0.0f;
   // Essentially, we go around the circle as starting segments.
   for (float angle = 0; angle < 360; angle += threshold/2) {
     std::vector<LinearSegmentSteps> segments =
-      DoAngleMove(threshold, angle, testing_angle);
+      DoAngleMove(threshold, kSpeedTuneAngle, angle, testing_angle);
 
     // Depending on the two move angles we expect 2 to 4 segments.
     // 2 segments (first move euclid speed is faster than the second)
@@ -370,10 +382,12 @@ void testShallowAngleAllStartingPoints(float threshold, float testing_angle) {
     // A shallow move just plows through the middle, so we expect all the
     // joint speeds to be larger than zero.
     for (size_t i = 0; i < segments.size(); ++i) {
-      if (i > 0)
+      if (i > 0) {
         EXPECT_GT(segments[i].v0, 0) << "At angle " << angle;
-      if (i < segments.size()-1)
+      }
+      if (i < segments.size()-1) {
         EXPECT_GT(segments[i].v1, 0) << "At angle " << angle;
+      }
     }
   }
 }

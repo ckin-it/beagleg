@@ -26,8 +26,8 @@
 #include <assert.h>
 #include <ctype.h>
 
-#include "logging.h"
-#include "string-util.h"
+#include "common/logging.h"
+#include "common/string-util.h"
 
 bool ConfigParser::Reader::ParseString(const std::string &value,
                                        std::string *result) {
@@ -107,12 +107,13 @@ double ConfigParser::Reader::ParseDoubleExpression(const char *input,
 }
 
 void ConfigParser::Reader::ReportError(int line_no, const std::string &msg) {
-  std::cerr << line_no << ":" << msg << std::endl;
+  Log_error("%d: %s", line_no, msg.c_str());
 }
 
 ConfigParser::ConfigParser() : parse_success_(true) {}
 
 bool ConfigParser::SetContentFromFile(const char *filename) {
+  if (!filename) return false;
   parse_success_ = true;
   std::ifstream file_stream(filename, std::ios::binary);
   content_.assign(std::istreambuf_iterator<char>(file_stream),
@@ -125,7 +126,7 @@ void ConfigParser::SetContent(const std::string &content) {
   content_ = content;
 }
 
-// Extract next line out of source. Takes 
+// Extract next line out of source. Takes
 // Modifies source.
 static StringPiece NextLine(StringPiece *source) {
   StringPiece result;

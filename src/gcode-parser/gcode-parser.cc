@@ -39,27 +39,29 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include "logging.h"
-#include "string-util.h"
+#include "common/logging.h"
+#include "common/string-util.h"
+
 #include "simple-lexer.h"
 
 const AxisBitmap_t kAllAxesBitmap =
-  ((1 << AXIS_X) | (1 << AXIS_Y) | (1 << AXIS_Z)| (1 << AXIS_E)
-   | (1 << AXIS_A) | (1 << AXIS_B) | (1 << AXIS_C)
-   | (1 << AXIS_U) | (1 << AXIS_V) | (1 << AXIS_W));
+  ((1 << AXIS_X) | (1 << AXIS_Y) | (1 << AXIS_Z) |
+   (1 << AXIS_A) | (1 << AXIS_B) | (1 << AXIS_C) |
+   (1 << AXIS_U) | (1 << AXIS_V) | (1 << AXIS_W) |
+   (1 << AXIS_E));
 
 char gcodep_axis2letter(enum GCodeParserAxis axis) {
   switch (axis) {
   case AXIS_X: return 'X';
   case AXIS_Y: return 'Y';
   case AXIS_Z: return 'Z';
-  case AXIS_E: return 'E';
   case AXIS_A: return 'A';
   case AXIS_B: return 'B';
   case AXIS_C: return 'C';
   case AXIS_U: return 'U';
   case AXIS_V: return 'V';
   case AXIS_W: return 'W';
+  case AXIS_E: return 'E';
   case GCODE_NUM_AXES: return '?';
     // no default to have compiler warn about new values.
   }
@@ -72,26 +74,30 @@ enum GCodeParserAxis gcodep_letter2axis(char letter) {
   case 'X': case 'x': return AXIS_X;
   case 'Y': case 'y': return AXIS_Y;
   case 'Z': case 'z': return AXIS_Z;
-  case 'E': case 'e': return AXIS_E;
   case 'A': case 'a': return AXIS_A;
   case 'B': case 'b': return AXIS_B;
   case 'C': case 'c': return AXIS_C;
   case 'U': case 'u': return AXIS_U;
   case 'V': case 'v': return AXIS_V;
   case 'W': case 'w': return AXIS_W;
+  case 'E': case 'e': return AXIS_E;
   }
   return GCODE_NUM_AXES;
 }
+
+static const char *const kCoordinateSystemNames[9] = {
+  "G54", "G55", "G56", "G57", "G58", "G59", "G59.1", "G59.2", "G59.3"
+};
 
 // We keep the implementation with all its unnecessary details for the user
 // in this implementation.
 class GCodeParser::Impl {
 public:
   Impl(const GCodeParser::Config &config,
-       GCodeParser::EventReceiver *parse_events, bool allow_m111);
+       GCodeParser::EventReceiver *parse_events);
   ~Impl();
 
-  void ParseLine(GCodeParser *owner, const char *line, FILE *err_stream);
+  void ParseBlock(GCodeParser *owner, const char *line, FILE *err_stream);
   int ParseStream(GCodeParser *owner, int input_fd, FILE *err_stream);
   const char *gcodep_parse_pair_with_linenumber(int line_num,
                                                 const char *line,
@@ -99,6 +105,7 @@ public:
                                                 float *value,
                                                 FILE *err_stream);
   int error_count() const { return error_count_; }
+  EventReceiver *callbacks() { return callbacks_; }
 
 private:
   enum DebugLevel {
@@ -115,7 +122,7 @@ private:
     set_all_axis_to_absolute(true);   // G90
     set_ijk_absolute(false);          // G91.1
     reset_G92();                      // No global offset.
-    set_current_offset(global_offset_g92_);
+    set_current_offset(global_offset_g92_, "H");
 
     arc_normal_ = AXIS_Z;  // Arcs in XY-plane
 
@@ -125,16 +132,20 @@ private:
     do_while_ = false;
 
     // Some initial machine states emitted as events.
-    callbacks->set_speed_factor(1.0);
-    callbacks->set_fanspeed(0);
-    callbacks->set_temperature(0);
+    callbacks()->set_speed_factor(1.0);
+    callbacks()->set_fanspeed(0);
+    callbacks()->set_temperature(0);
   }
+
+  void InitCoordSystems();
 
   void set_all_axis_to_absolute(bool value) {
     for (GCodeParserAxis a : AllAxes()) {
       axis_is_absolute_[a] = value;
     }
+    modal_absolute_g90_ = value;
   }
+
   void set_ijk_absolute(bool absolute) {
     if (absolute) {
       gprintf(GLOG_SEMANTIC_ERR, "TODO: We don't support absolute IJK yet\n");
@@ -148,22 +159,22 @@ private:
 
   // The following methods set the origin and offset and also
   // inform the event receiver about this change.
-  void set_current_offset(const AxesRegister &offset) {
+  void set_current_offset(const AxesRegister &offset, const char *name) {
     current_global_offset_ = &offset;
-    inform_origin_offset_change();
+    inform_origin_offset_change(name);
   }
   // no need yet for set_current_origin().
 
-  void inform_origin_offset_change() {
+  void inform_origin_offset_change(const char *name) {
     AxesRegister visible_origin(*current_origin_);
     for (GCodeParserAxis a : AllAxes()) {
       visible_origin[a] += current_global_offset()[a];
     }
-    callbacks->inform_origin_offset(visible_origin);
+    callbacks()->inform_origin_offset(visible_origin, name);
   }
 
   void finish_program_and_reset() {
-    callbacks->gcode_finished(false);
+    callbacks()->gcode_finished(false);
 
     InitProgramDefaults();
     program_in_progress_ = false;
@@ -250,18 +261,24 @@ private:
   const char *read_param_name(const char *line, std::string *result);
 
   // Read parameter. Do range check.
-  bool read_parameter(StringPiece param_name, float *result) {
-    if (config.parameters == NULL)
+  bool read_parameter(StringPiece param_name, float *result) const {
+    if (config_.parameters == NULL)
       return false;
     param_name = TrimWhitespace(param_name);
-    // TODO: should we provide an error if a value is not assigned yet ?
-    *result = (*config.parameters)[ToLower(param_name)];
-    return true;
+    Config::ParamMap::const_iterator found
+      = config_.parameters->find(ToLower(param_name));
+    if (found != config_.parameters->end()) {
+      *result = found->second;
+      return true;
+    } else {
+      *result = 0;
+      return false;
+    }
   }
 
   // Read parameter. Do range check.
   bool store_parameter(StringPiece param_name, float value) {
-    if (config.parameters == NULL)
+    if (config_.parameters == NULL)
       return false;
     param_name = TrimWhitespace(param_name);
     // zero parameter can never be written.
@@ -270,7 +287,7 @@ private:
               param_name.ToString().c_str());
       return false;
     }
-    (*config.parameters)[ToLower(param_name)] = value;
+    (*config_.parameters)[ToLower(param_name)] = value;
     return true;
   }
 
@@ -285,10 +302,10 @@ private:
   };
   void gprintf(enum GCodePrintLevel level, const char *format, ...);
 
-  static AxesRegister kZeroOffset;
+  static const AxesRegister kZeroOffset;
 
-  GCodeParser::EventReceiver *const callbacks;
-  const GCodeParser::Config config;
+  GCodeParser::EventReceiver *const callbacks_;
+  GCodeParser::Config config_;
 
   SimpleLexer<Operation> op_parse_;
 
@@ -305,8 +322,12 @@ private:
   int modal_g0_g1_;
   int line_number_;
   float unit_to_mm_factor_;               // metric: 1.0; imperial 25.4
+
+  // We distinguish axes here, because in 3D printers, the E-axis can be
+  // set relative independently of the other axes.
   bool axis_is_absolute_[GCODE_NUM_AXES]; // G90 or G91 active.
-  bool ijk_is_absolute_;
+  bool ijk_is_absolute_ = false;
+  bool modal_absolute_g90_ = true;        // All axes, but E might differ
 
   // The axes_pos is the current absolute position of the machine
   // in the work-cube. It always is positive in the range of
@@ -317,9 +338,10 @@ private:
   // -- Origins
   // All the following coordinates are absolute positions. They
   // can be choosen as active origin.
-  // The home position is not necessarily {0,0,0...}, but it is where
-  // the end-switches are.
-  const AxesRegister home_position_;
+  // The machine origin or home position is not necessarily {0,0,0...}, but
+  // it is where the end-switches are.
+  const AxesRegister machine_origin_;
+
   // Coordinate systems 1-9 (G54 to G59.3) (zero-indexed)
   AxesRegister coord_system_[9];
 
@@ -355,12 +377,11 @@ private:
   int error_count_;
 };
 
-AxesRegister GCodeParser::Impl::kZeroOffset;
+const AxesRegister GCodeParser::Impl::kZeroOffset;
 
 GCodeParser::Impl::Impl(const GCodeParser::Config &parse_config,
-                        GCodeParser::EventReceiver *parse_events,
-                        bool allow_m111)
-  : callbacks(parse_events), config(parse_config),
+                        GCodeParser::EventReceiver *parse_events)
+  : callbacks_(parse_events), config_(parse_config),
     program_in_progress_(false),
     err_msg_(NULL), modal_g0_g1_(0),
     line_number_(0),
@@ -371,16 +392,23 @@ GCodeParser::Impl::Impl(const GCodeParser::Config &parse_config,
     // in which we know the machine is in some other position (e.g. restarting
     // a job). So that needs to be more flexible ans possibly be part of the
     // incoming config.
-    axes_pos_(config.machine_origin),
-    home_position_(config.machine_origin),
-    current_origin_(&home_position_), current_global_offset_(&kZeroOffset),
+    axes_pos_(config_.machine_origin),
+    machine_origin_(config_.machine_origin),
+    // The current origin is the same as the home position (where the home
+    // switches are) That means for CNC machines with machine origins e.g.
+    // on the top right, that all valid coordinates to stay within the
+    // machine cube are negative.
+    current_origin_(&machine_origin_),
+    current_global_offset_(&kZeroOffset),
     arc_normal_(AXIS_Z),
     while_err_stream_(NULL), do_while_(false),
-    debug_level_(DEBUG_NONE), allow_m111_(allow_m111), error_count_(0)
+    debug_level_(DEBUG_NONE),
+    error_count_(0)
 {
-  assert(callbacks);  // otherwise, this is not very useful.
+  assert(callbacks_);  // otherwise, this is not very useful.
   reset_G92();
   InitProgramDefaults();
+  InitCoordSystems();
   op_parse_.AddKeyword("+",  PLUS);
   op_parse_.AddKeyword("-",  MINUS);
   op_parse_.AddKeyword("/",  DIVIDED_BY);
@@ -935,9 +963,15 @@ const char *GCodeParser::Impl::gcodep_set_parameter(const char *line) {
   } else if (*line == '=') {
     line = skip_white(line+1);
   } else {
-    gprintf(GLOG_SYNTAX_ERR,
-            "gcodep_set_parameter: expected '=' after '#%s' got '%s'\n",
-            log_name, line);
+    if (*line == '\0') {
+      value = 0.0;
+      read_parameter(param_name, &value);
+      gprintf(GLOG_INFO, "#%s = %f\n", log_name, value);
+    } else {
+      gprintf(GLOG_SYNTAX_ERR,
+              "gcodep_set_parameter: expected '=' after '#%s' got '%s'\n",
+              log_name, line);
+    }
     return NULL;
   }
 
@@ -967,7 +1001,7 @@ const char *GCodeParser::Impl::gcodep_set_parameter(const char *line) {
       endptr = gcodep_value(line, &value);
       if (endptr == NULL) {
         gprintf(GLOG_SYNTAX_ERR,
-                "gcodep_set_parameter: expected value after '#%d=[%d] ? ' got '%s'\n",
+                "gcodep_set_parameter: expected value after '#%s=[%d] ? ' got '%s'\n",
                 log_name, line, condition);
         return NULL;
       }
@@ -979,7 +1013,7 @@ const char *GCodeParser::Impl::gcodep_set_parameter(const char *line) {
         endptr = gcodep_value(line, &value);
         if (endptr == NULL) {
           gprintf(GLOG_SYNTAX_ERR,
-                  "gcodep_set_parameter: expected value after '#%d=[%d] ? %f :' got '%s'\n",
+                  "gcodep_set_parameter: expected value after '#%s=[%d] ? %f :' got '%s'\n",
                   log_name, line, condition, true_value);
           return NULL;
         }
@@ -989,7 +1023,7 @@ const char *GCodeParser::Impl::gcodep_set_parameter(const char *line) {
           value = true_value;
       } else {
         gprintf(GLOG_SYNTAX_ERR,
-                "gcodep_set_parameter: expected ':' after '#%d=[%d] ? %f' got '%s'\n",
+                "gcodep_set_parameter: expected ':' after '#%s=[%d] ? %f' got '%s'\n",
                 log_name, line, condition, true_value);
         return NULL;
       }
@@ -997,8 +1031,9 @@ const char *GCodeParser::Impl::gcodep_set_parameter(const char *line) {
   }
 
   store_parameter(param_name, value);
+  callbacks()->gcode_command_done('#', value);
 
-  gprintf(GLOG_EXPRESSION, "#%d=%f\n", log_name, value);
+  gprintf(GLOG_EXPRESSION, "#%s=%f\n", log_name, value);
 
   return line;
 }
@@ -1089,8 +1124,8 @@ void GCodeParser::Impl::gcodep_while_end() {
       if (control_parse_.ExpectNext(&line, CK_DO)) {
         std::vector<StringPiece> piece = SplitString(while_loop_, "\n");
         for (size_t i=0; i < piece.size(); i++)
-          ParseLine(while_owner_, piece[i].ToString().c_str(),
-                    while_err_stream_);
+          ParseBlock(while_owner_, piece[i].ToString().c_str(),
+                     while_err_stream_);
       } else {
         gprintf(GLOG_SYNTAX_ERR, "expected DO got '%s'\n", line);
         return;
@@ -1210,16 +1245,51 @@ const char *GCodeParser::Impl::handle_home(const char *line) {
     line = remaining_line;
   }
   if (homing_flags == 0) homing_flags = kAllAxesBitmap;
-  callbacks->go_home(homing_flags);
+  callbacks()->go_home(homing_flags);
 
   // Now update the world position
   for (GCodeParserAxis a : AllAxes()) {
     if (homing_flags & (1 << a)) {
-      axes_pos_[a] = home_position_[a];
+      axes_pos_[a] = machine_origin_[a];
     }
   }
 
   return line;
+}
+
+// Initialize the coordiate systems from the loaded parameters
+void GCodeParser::Impl::InitCoordSystems() {
+  float value;
+  for (int i = 0; i < 9; ++i) {
+    bool set = false;
+    int offset = i * 20;
+    value = 0.0;
+    std::string coords = "";
+    for (GCodeParserAxis axis : AllAxes()) {
+      read_parameter(StringPrintf("%d", 5221 + offset + axis), &value);
+      coord_system_[i][axis] = machine_origin_[axis] + value;
+      if (axis <= AXIS_Y || value)
+        coords += StringPrintf(" %c:%.3f", gcodep_axis2letter(axis), value);
+      if (value) set = true;
+    }
+    if (set) {  // "undefined" message is pretty noisy, only print if set.
+      Log_debug("%s offset%s", kCoordinateSystemNames[i],
+                set ? coords.c_str() : " undefined");
+    }
+  }
+
+  if (!read_parameter("5220", &value) || value < 1 || value > 9) {
+    value = 1;     // If not set or invalid, force G54
+    store_parameter("5220", value);
+  }
+
+  const int coord_system = (int)value - 1;
+  assert(coord_system >= 0 && coord_system < 9);  // enforced above.
+
+  current_origin_ = &coord_system_[coord_system];
+  inform_origin_offset_change(kCoordinateSystemNames[coord_system]);
+  Log_debug("Using Coordinate system #5220=%d: %s",
+            coord_system + 1, kCoordinateSystemNames[coord_system]);
 }
 
 // Set coordinate system data
@@ -1248,19 +1318,45 @@ const char *GCodeParser::Impl::handle_G10(const char *line) {
     }
     line = remaining_line;
   }
-  if (l_val == 2 && p_val >= 1 && p_val <= 9) {
-    for (GCodeParserAxis a : AllAxes()) {
-      if (!have_val[a]) coords[a] = coord_system_[p_val-1][a];
-    }
-    coord_system_[p_val-1] = coords;
-    // Now update the parameters
-    int offset = (p_val-1) * 20;
-    for (GCodeParserAxis a : AllAxes()) {
-      store_parameter(StringPrintf("%d", 5221 + offset + a), coords[a]);
-    }
-  } else {
-    gprintf(GLOG_SYNTAX_ERR, "handle_G10: invalid L or P value\n");
+
+  // Right now, we only do G10 origin offsets. If we do more, calling various
+  // functions would probably be good.
+
+  if (l_val != 2) {
+    gprintf(GLOG_SEMANTIC_ERR, "G10: can only handle G10 L2\n");
+    return line;
   }
+
+  if (p_val < 1 || p_val > 9) {
+    gprintf(GLOG_SEMANTIC_ERR, "G10 L2 P%d - coordinate system P-value needs "
+            "to be between P1..P9\n", p_val);
+    return line;
+  }
+
+  const int cs = p_val - 1;   // Target coordinate system.
+
+  // Update coordinate system with values that changed.
+  for (GCodeParserAxis a : AllAxes()) {
+    if (!have_val[a]) continue;
+    coord_system_[cs][a] = modal_absolute_g90_
+      ? machine_origin_[a] + coords[a]
+      : coord_system_[cs][a] + coords[a];
+  }
+
+  // Now update the parameters
+  const int variable_offset = cs * 20;
+  for (GCodeParserAxis a : AllAxes()) {
+    if (!have_val[a]) continue;
+    // We always store the absolute offset from home.
+    store_parameter(StringPrintf("%d", 5221 + variable_offset + a),
+                    coord_system_[cs][a] - machine_origin_[a]);
+  }
+  if (current_origin_ == &coord_system_[cs]) {
+    // If this was our currently active coordiate system, we need to inform
+    // about the new display offsets.
+    inform_origin_offset_change(kCoordinateSystemNames[cs]);
+  }
+
   return line;
 }
 
@@ -1290,12 +1386,12 @@ void GCodeParser::Impl::change_coord_system(float sub_command) {
     if (sub_command == 59.3f) { coord_system = 9; break; }
     // fallthru
   default:
-    gprintf(GLOG_SYNTAX_ERR, "invalid coordinate system\n");
+    gprintf(GLOG_SYNTAX_ERR, "invalid coordinate system %.1f\n", sub_command);
     return;
   }
   store_parameter("5220", coord_system);
   current_origin_ = &coord_system_[coord_system-1];
-  inform_origin_offset_change();
+  inform_origin_offset_change(kCoordinateSystemNames[coord_system-1]);
 }
 
 // Set relative coordinate system
@@ -1317,17 +1413,17 @@ const char *GCodeParser::Impl::handle_G92(float sub_command, const char *line) {
 
       line = remaining_line;
     }
-    set_current_offset(global_offset_g92_);
+    set_current_offset(global_offset_g92_, "G92");
   }
   else if (sub_command == 92.1f) {   // Reset
     reset_G92();
-    set_current_offset(global_offset_g92_);
+    set_current_offset(global_offset_g92_, "");
   }
   else if (sub_command == 92.2f) {   // Suspend
-    set_current_offset(kZeroOffset);
+    set_current_offset(kZeroOffset, "");
   }
   else if (sub_command == 92.3f) {   // Restore
-    set_current_offset(global_offset_g92_);
+    set_current_offset(global_offset_g92_, "G92");
   }
   return line;
 }
@@ -1340,7 +1436,7 @@ const char *GCodeParser::Impl::set_param(char param_letter,
   float value;
   const char *remaining_line = gparse_pair(line, &letter, &value);
   if (remaining_line != NULL && letter == param_letter) {
-    (callbacks->*setter)(factor * value);   // TODO
+    (callbacks()->*setter)(factor * value);   // TODO
     return remaining_line;
   }
   return line;
@@ -1357,6 +1453,7 @@ const char *GCodeParser::Impl::handle_move(const char *line, bool force_change) 
   float feedrate = -1;
   const char *remaining_line;
   AxesRegister new_pos = axes_pos_;
+  AxisBitmap_t affected_axes = 0;
 
   while ((remaining_line = gparse_pair(line, &axis_l, &value))) {
     const float unit_value = value * unit_to_mm_factor_;
@@ -1364,22 +1461,27 @@ const char *GCodeParser::Impl::handle_move(const char *line, bool force_change) 
       feedrate = f_param_to_feedrate(unit_value);
       any_change = true;
     }
+    else if (axis_l == 'S') {
+      callbacks()->change_spindle_speed(value);
+    }
     else {
       const enum GCodeParserAxis update_axis = gcodep_letter2axis(axis_l);
       if (update_axis == GCODE_NUM_AXES)
         break;  // Invalid axis: possibly start of new command.
       new_pos[update_axis] = abs_axis_pos(update_axis, unit_value);
       any_change = true;
+      affected_axes |= (1 << update_axis);
     }
     line = remaining_line;
   }
 
   bool did_move = false;
   if (any_change) {
+    callbacks()->clamp_to_range(affected_axes, &new_pos);
     if (modal_g0_g1_) {
-      did_move = callbacks->coordinated_move(feedrate, new_pos);
+      did_move = callbacks()->coordinated_move(feedrate, new_pos);
     } else {
-      did_move = callbacks->rapid_move(feedrate, new_pos);
+      did_move = callbacks()->rapid_move(feedrate, new_pos);
     }
   }
   if (did_move) {
@@ -1537,7 +1639,7 @@ const char *GCodeParser::Impl::handle_arc(const char *line, bool is_cw) {
   absolute_center[AXIS_X] += offset[AXIS_X];
   absolute_center[AXIS_Y] += offset[AXIS_Y];
   absolute_center[AXIS_Z] += offset[AXIS_Z];
-  callbacks->arc_move(feedrate, arc_normal_, is_cw,
+  callbacks()->arc_move(feedrate, arc_normal_, is_cw,
                       axes_pos_, absolute_center, target);
   axes_pos_ = target;
   return line;
@@ -1689,7 +1791,7 @@ const char *GCodeParser::Impl::handle_spline(float sub_command, const char *line
     cp2 = _cp2;
   }
 
-  callbacks->spline_move(-1, axes_pos_, cp1, cp2, target);
+  callbacks()->spline_move(-1, axes_pos_, cp1, cp2, target);
   axes_pos_ = target;
   return line;
 }
@@ -1709,19 +1811,19 @@ const char *GCodeParser::Impl::handle_z_probe(const char *line) {
   }
   // Probe for the travel endstop
   float probed_pos;
-  if (callbacks->probe_axis(feedrate, AXIS_Z, &probed_pos)) {
+  if (callbacks()->probe_axis(feedrate, AXIS_Z, &probed_pos)) {
     axes_pos_[AXIS_Z] = probed_pos;
     // Doing implicit G92 here. Is this what we want ? Later, this might
     // be part of tool-offset or something.
     global_offset_g92_[AXIS_Z] = (axes_pos_[AXIS_Z] - probe_thickness)
       - current_origin()[AXIS_Z];
-    set_current_offset(global_offset_g92_);
+    set_current_offset(global_offset_g92_, "G30");
   }
   return line;
 }
 
 const char *GCodeParser::Impl::handle_M111(const char *line) {
-  if (allow_m111_) {
+  if (config_.allow_m111) {
     int level = -1;
     char letter;
     float value;
@@ -1741,8 +1843,8 @@ const char *GCodeParser::Impl::handle_M111(const char *line) {
 }
 
 // Note: changes here should be documented in G-code.md as well.
-void GCodeParser::Impl::ParseLine(GCodeParser *owner,
-                                  const char *line, FILE *err_stream) {
+void GCodeParser::Impl::ParseBlock(GCodeParser *owner,
+                                   const char *line, FILE *err_stream) {
   if (debug_level_ & DEBUG_PARSER) {
     Log_debug("GCodeParser| %s", line);
   }
@@ -1753,7 +1855,7 @@ void GCodeParser::Impl::ParseLine(GCodeParser *owner,
   float value;
   while ((line = gparse_pair(line, &letter, &value))) {
     if (!program_in_progress_) {
-      callbacks->gcode_start(owner);
+      callbacks()->gcode_start(owner);
       program_in_progress_ = true;
     }
     bool last_spline = have_first_spline_;
@@ -1787,19 +1889,19 @@ void GCodeParser::Impl::ParseLine(GCodeParser *owner,
       case 71: unit_to_mm_factor_ = 1.0f; break;
       case 90: case 91: handle_G90_G91(value);  break;
       case 92: line = handle_G92(value, line); break;
-      default: line = callbacks->unprocessed(letter, value, line); break;
+      default: line = callbacks()->unprocessed(letter, value, line); break;
       }
     }
     else if (letter == 'M') {
       switch ((int) value) {
       case  2: finish_program_and_reset(); break;
-      case 17: callbacks->motors_enable(true); break;
-      case 18: callbacks->motors_enable(false); break;
-      case 24: callbacks->wait_for_start(); break;
+      case 17: callbacks()->motors_enable(true); break;
+      case 18: callbacks()->motors_enable(false); break;
+      case 24: callbacks()->wait_for_start(); break;
       case 30: finish_program_and_reset(); break;
       case 82: axis_is_absolute_[AXIS_E] = true; break;
       case 83: axis_is_absolute_[AXIS_E] = false; break;
-      case 84: callbacks->motors_enable(false); break;
+      case 84: callbacks()->motors_enable(false); break;
       case 104: line = set_param('S',
                                  &GCodeParser::EventReceiver::set_temperature,
                                  1.0f, line);
@@ -1807,26 +1909,28 @@ void GCodeParser::Impl::ParseLine(GCodeParser *owner,
       case 106: line = set_param('S', &GCodeParser::EventReceiver::set_fanspeed,
                                  1.0f, line);
         break;
-      case 107: callbacks->set_fanspeed(0); break;
+      case 107: callbacks()->set_fanspeed(0); break;
       case 109:
         line = set_param('S', &GCodeParser::EventReceiver::set_temperature,
                          1.0f, line);
-        callbacks->wait_temperature();
+        callbacks()->wait_temperature();
         break;
-      case 116: callbacks->wait_temperature(); break;
+      case 116: callbacks()->wait_temperature(); break;
       case 111: line = handle_M111(line); break;
       case 220:
         line = set_param('S', &GCodeParser::EventReceiver::set_speed_factor,
                          0.01f, line);
         break;
-      default: line = callbacks->unprocessed(letter, value, line); break;
+      case 500: config_.SaveParams(); break;
+      case 501: config_.LoadParams(); break;
+      default: line = callbacks()->unprocessed(letter, value, line); break;
       }
     }
     else if (letter == 'F') {
       // Feedrate is sometimes used in absence of a move command.
       const float unit_value = value * unit_to_mm_factor_;
       const float feedrate = f_param_to_feedrate(unit_value);
-      callbacks->coordinated_move(feedrate, axes_pos_);  // No move, just feed
+      callbacks()->coordinated_move(feedrate, axes_pos_);  // No move, just feed
     }
     else if (letter == 'N') {
       // Line number? Yeah, ignore for now :)
@@ -1835,7 +1939,7 @@ void GCodeParser::Impl::ParseLine(GCodeParser *owner,
     else {
       const enum GCodeParserAxis axis = gcodep_letter2axis(letter);
       if (axis == GCODE_NUM_AXES) {
-        line = callbacks->unprocessed(letter, value, line);
+        line = callbacks()->unprocessed(letter, value, line);
       } else {
         // This line must be a continuation of a previous G0/G1 command.
         // Update the axis position then handle the move.
@@ -1848,129 +1952,38 @@ void GCodeParser::Impl::ParseLine(GCodeParser *owner,
       }
     }
     if (processed_command) {
-      callbacks->gcode_command_done(letter, value);
+      callbacks()->gcode_command_done(letter, value);
     }
   }
   err_msg_ = NULL;
 }
 
-// It is usually good to shut down gracefully, otherwise the PRU keeps running.
-// So we're intercepting signals and exit gcode_machine_control_from_stream()
-// cleanly.
-static volatile bool caught_signal = false;
-static void receive_signal(int signo) {
-  static char msg[] = "Caught signal. Shutting down ASAP.\n";
-  if (!caught_signal) {
-    write(STDERR_FILENO, msg, sizeof(msg));
-  }
-  caught_signal = true;
-}
-static void arm_signal_handler() {
-  caught_signal = false;
-  struct sigaction sa = {};
-  sa.sa_handler = receive_signal;
-  sa.sa_flags = SA_RESETHAND;  // oneshot, no restart
-  sigaction(SIGTERM, &sa, NULL);  // Regular kill
-  sigaction(SIGINT, &sa, NULL);   // Ctrl-C
-
-  // Other, internal problems that should never happen, but
-  // can trigger multiple times before we gain back control
-  // to shut down as cleanly as possible. These are not one-shot.
-  sa.sa_flags = 0;
-  sigaction(SIGSEGV, &sa, NULL);
-  sigaction(SIGBUS, &sa, NULL);
-  sigaction(SIGFPE, &sa, NULL);
-}
-static void disarm_signal_handler() {
-  signal(SIGTERM, SIG_DFL);  // Regular kill
-  signal(SIGINT, SIG_DFL);   // Ctrl-C
-  signal(SIGSEGV, SIG_DFL);
-  signal(SIGBUS, SIG_DFL);
-  signal(SIGFPE, SIG_DFL);
-}
-
-// Public facade function.
-int GCodeParser::Impl::ParseStream(GCodeParser *owner,
-                                   int input_fd, FILE *err_stream) {
-  if (err_stream) {
-    // Output needs to be unbuffered, otherwise they'll never make it.
-    setvbuf(err_stream, NULL, _IONBF, 0);
-  }
-
-  FILE *gcode_stream = fdopen(input_fd, "r");
-  if (gcode_stream == NULL) {
-    Log_error("While opening stream from fd %d: %s", input_fd, strerror(errno));
-    return 1;
-  }
-
-  bool is_processing = true;
-  fd_set read_fds;
-  struct timeval wait_time;
-  int select_ret;
-  wait_time.tv_sec = 0;
-  wait_time.tv_usec = 50 * 1000;
-  FD_ZERO(&read_fds);
-
-  while_owner_ = owner;
-  while_err_stream_ = err_stream;
-
-  arm_signal_handler();
-  char buffer[8192];
-  while (!caught_signal) {
-    // Read with timeout. If we don't get anything on our input, but it
-    // is not finished yet, we tell our
-    FD_SET(input_fd, &read_fds);
-    // When we're already in idle mode, we're not interested in change.
-    wait_time.tv_usec = 50 * 1000;
-    select_ret = select(input_fd + 1, &read_fds, NULL, NULL, &wait_time);
-    if (select_ret < 0)  { // Broken stream.
-      Log_error("select(): %s", strerror(errno));
-      break;
-    }
-
-    if (select_ret == 0) {  // Timeout. Regularly call.
-      callbacks->input_idle(is_processing);
-      is_processing = false;
-      continue;
-    }
-
-    is_processing = true;
-
-    // Filedescriptor readable. Now wait for a line to finish.
-    if (fgets(buffer, sizeof(buffer), gcode_stream) == NULL)
-      break;
-
-    ParseLine(owner, buffer, err_stream);
-  }
-  disarm_signal_handler();
-
-  if (caught_signal)
-    return 2;
-
-  if (err_stream) {
-    fflush(err_stream);
-  }
-  fclose(gcode_stream);
-
-  // always call gcode_finished() to disable motors at end of stream
-  callbacks->gcode_finished(true);
-
-  return 0;
-}
-
-GCodeParser::GCodeParser(const Config &config, EventReceiver *parse_events,
-                         bool allow_m111)
-  : impl_(new Impl(config, parse_events, allow_m111)) {
+GCodeParser::GCodeParser(const Config &config, EventReceiver *parse_events)
+  : impl_(new Impl(config, parse_events)) {
 }
 GCodeParser::~GCodeParser() {
   delete impl_;
 }
-void GCodeParser::ParseLine(const char *line, FILE *err_stream) {
-  impl_->ParseLine(this, line, err_stream);
+void GCodeParser::ParseBlock(const char *line, FILE *err_stream) {
+  impl_->ParseBlock(this, line, err_stream);
 }
-int GCodeParser::ParseStream(int input_fd, FILE *err_stream) {
-  return impl_->ParseStream(this, input_fd, err_stream);
+
+bool GCodeParser::ReadFile(FILE *input_gcode_stream, FILE *err_stream) {
+  if (input_gcode_stream == nullptr) return false;
+  char buffer[8192];   // "8kB ought to be enough for everybody"
+  while (fgets(buffer, sizeof(buffer), input_gcode_stream) != nullptr) {
+    impl_->ParseBlock(this, buffer, err_stream);
+  }
+  if (err_stream) {
+    fflush(err_stream);
+  }
+  fclose(input_gcode_stream);
+
+  // always call gcode_finished() to disable motors at end of stream
+  impl_->callbacks()->gcode_finished(true);
+  return true;
 }
+
 int GCodeParser::error_count() const { return impl_->error_count(); }
 
 const char *GCodeParser::ParsePair(const char *line,

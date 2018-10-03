@@ -25,7 +25,6 @@
 #include <math.h>
 #include <netinet/in.h>
 #include <pwd.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,17 +34,22 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <cmath>
+#include <memory>
+
+#include "common/fd-mux.h"
+#include "common/logging.h"
+#include "common/string-util.h"
 #include "config-parser.h"
 #include "gcode-machine-control.h"
-#include "gcode-parser.h"
+#include "gcode-parser/gcode-parser.h"
+#include "gcode-parser/gcode-streamer.h"
 #include "hardware-mapping.h"
-#include "logging.h"
-#include "pru-hardware-interface.h"
 #include "motion-queue.h"
 #include "motor-operations.h"
-#include "spindle-control.h"
+#include "pru-hardware-interface.h"
 #include "sim-firmware.h"
-#include "string-util.h"
+#include "spindle-control.h"
 
 static int usage(const char *prog, const char *msg) {
   if (msg) {
@@ -68,9 +72,11 @@ static int usage(const char *prog, const char *msg) {
           // -N dry-run with simulation output; mostly for development, so not mentioned here.
           "  -P                         : Verbose: Show some more debug output (Default: off).\n"
           "  -S                         : Synchronous: don't queue (Default: off).\n"
-          "      --loop[=count]         : Loop file number of times (no value: forever; equal sign with value important.)\n"
           "      --allow-m111           : Allow changing the debug level with M111 (Default: off).\n"
-          // --threshold-angle specifies threshold angle used for arc segment acceleration.
+          "\nSegment acceleration tuning:\n"
+          "     --threshold-angle       : Specifies the threshold angle used for segment acceleration (Default: 10 degrees).\n"
+          "     --speed-tune-angle      : Specifies the angle used for proportional speed-tuning. (Default: 60 degrees)\n\n"
+          "                               The --threshold-angle + --speed-tune-angle must be less than 90 degrees.\n"
           "\nConfiguration file overrides:\n"
           "     --homing-required       : Require homing before any moves (require-homing = yes).\n"
           "     --nohoming-required     : (Opposite of above^): Don't require homing before any moves (require-homing = no).\n"
@@ -125,25 +131,18 @@ static bool drop_privileges(StringPiece privs) {
 }
 
 // Reads the given "gcode_filename" with GCode and operates machine with it.
-// If "loop_count" is >= 0, repeats this number after the first execution.
-static int send_file_to_machine(GCodeMachineControl *machine,
-                                GCodeParser *parser,
-                                const char *gcode_filename, int loop_count) {
-  int ret;
+static void send_file_to_machine(GCodeMachineControl *machine,
+                                 GCodeStreamer *streamer,
+                                 const char *gcode_filename) {
   machine->SetMsgOut(stderr);
-  while (loop_count < 0 || loop_count-- > 0) {
-    int fd = open(gcode_filename, O_RDONLY);
-    ret = parser->ParseStream(fd, stderr);
-    if (ret != 0)
-      break;
-  }
-  return ret;
+  int fd = open(gcode_filename, O_RDONLY);
+  streamer->ConnectStream(fd, stderr);
 }
 
 // Open server. Return file-descriptor or -1 if listen fails.
 // Bind to "bind_addr" (can be NULL, then it is 0.0.0.0) and "port".
 static int open_server(const char *bind_addr, int port) {
-  if (port > 65535) {
+  if (port < 0 || port > 65535) {
     Log_error("Invalid port %d\n", port);
     return -1;
   }
@@ -172,60 +171,131 @@ static int open_server(const char *bind_addr, int port) {
   return s;
 }
 
-static void eatsignal(int sig) {}
-
 // Accept connections and receive GCode.
 // Only one connection can be active at a time.
 // Socket must already be opened by open_server(). "bind_addr" and "port"
 // are just FYI information for nicer log-messages.
-static int run_server(int listen_socket,
-                      GCodeMachineControl *machine, GCodeParser *parser,
-                      const char *bind_addr, int port) {
-  signal(SIGPIPE, SIG_IGN);  // Pesky clients, closing connections...
-
+static void run_gcode_server(int listen_socket, FDMultiplexer *event_server,
+                             GCodeMachineControl *machine,
+                             GCodeStreamer *streamer,
+                             const char *bind_addr, int port) {
   if (listen(listen_socket, 2) < 0) {
-    Log_error("listen() failed: %s", strerror(errno));
-    return 1;
+    Log_error("listen(fd=%d) failed: %s", listen_socket, strerror(errno));
+    return;
   }
 
   Log_info("Ready to accept GCode-connections on %s:%d",
            bind_addr ? bind_addr : "0.0.0.0", port);
 
-  int process_result;
-  do {
+  event_server->RunOnReadable(listen_socket,
+                              [listen_socket,machine,streamer]() {
     struct sockaddr_in client;
     socklen_t socklen = sizeof(client);
-    struct sigaction sa = {};
-    sa.sa_handler = eatsignal;
-    sa.sa_flags = SA_RESETHAND | SA_NODEFER;  // oneshot, no restart
-    sigaction(SIGINT, &sa, NULL);
-    sigaction(SIGTERM, &sa, NULL);
     int connection = accept(listen_socket, (struct sockaddr*) &client, &socklen);
     if (connection < 0) {
       Log_error("accept(): %s", strerror(errno));
-      return (errno == EINTR) ? 2 : 1;
+      return true;
     }
-    sa.sa_handler = SIG_DFL;
-    sigaction(SIGINT, &sa, NULL);
-    sigaction(SIGTERM, &sa, NULL);
+
+    // We need to set the fd to non blocking in order to avoid
+    // blocking reads caused by spurious situations in Linux.
+    // http://man7.org/linux/man-pages/man2/select.2.html#BUGS
+    const int flags = fcntl(connection, F_GETFL, 0);
+    if (flags < 0) {
+      Log_error("fcntl(): %s", strerror(errno));
+      return true;
+    }
+    if (fcntl(connection, F_SETFL, flags | O_NONBLOCK) < 0) {
+      Log_error("fcntl(): %s", strerror(errno));
+      return true;
+    }
+
+    if (streamer->IsStreaming()) {
+      // For now, only one. Though we could have multiple.
+      dprintf(connection, "// Sorry, can only handle one connection at a time."
+              "There is only one machine after all.\n");
+      close(connection);
+      return true;
+    }
 
     char ip_buffer[INET_ADDRSTRLEN];
     const char *print_ip = inet_ntop(AF_INET, &client.sin_addr,
                                      ip_buffer, sizeof(ip_buffer));
     Log_info("Accepting new connection from %s\n", print_ip);
+
     FILE *msg_stream = fdopen(connection, "w");
     machine->SetMsgOut(msg_stream);
-    process_result = parser->ParseStream(connection, msg_stream);
+    streamer->ConnectStream(connection, msg_stream);
+    return true;
+  });
+}
 
-    fclose(msg_stream);
-    Log_info("Connection to %s closed.\n", print_ip);
-  } while (process_result == 0);
+// THIS IS A SAMPLE ONLY at this point. We need to come up with a proper
+// definition first what we want from a status server.
+// At this point: whenever it receives the character 'p' it prints the
+// position as json.
+static void run_status_server(const char *bind_addr, int port,
+                              FDMultiplexer *event_server,
+                              GCodeMachineControl *machine) {
+  const int listen_socket = open_server(bind_addr, port);
+  if (listen_socket < 0) return;
+  if (listen(listen_socket, 2) < 0) {
+    Log_error("listen(fd=%d) failed: %s", listen_socket, strerror(errno));
+    return;
+  }
 
-  close(listen_socket);
-  Log_error("Error gcode_machine_control_from_stream() == %d. Exiting\n",
-            process_result);
+  Log_info("Starting experimental status server on port %d", port);
 
-  return process_result;
+  event_server->RunOnReadable(
+    listen_socket, [listen_socket, machine, event_server]() {
+      struct sockaddr_in client;
+      socklen_t socklen = sizeof(client);
+      int conn = accept(listen_socket, (struct sockaddr*) &client, &socklen);
+      if (conn < 0) {
+        Log_error("accept(): %s", strerror(errno));
+        return true;
+      }
+
+      event_server->RunOnReadable(conn, [conn, machine]() {
+          char query;
+          if (read(conn, &query, 1) <= 0) {
+            close(conn);
+            return false;
+          }
+          if (query == 'p') {
+            AxesRegister pos;
+            machine->GetCurrentPosition(&pos);
+            // JSON {"x_axis":fval, "y_axis":fval, "z-axis":fval, "note":"experimental"}
+            dprintf(conn, "{\"x_axis\":%.3f, \"y_axis\":%.3f, "
+                    "\"z_axis\":%.3f, \"note\":\"experimental\"}\n",
+                    pos[AXIS_X], pos[AXIS_Y], pos[AXIS_Z]);
+          }
+          if (query == 's') {
+            GCodeMachineControl::EStopState estop_status = machine->GetEStopStatus();
+	    GCodeMachineControl::HomingState home_status = machine->GetHomeStatus();
+            // JSON {"estop":"status", "homed":"status", "motors":bool}
+            dprintf(conn, "{\"estop\":\"%s\", \"homed\":\"%s\", \"motors\":%s}\n",
+                    estop_status == GCodeMachineControl::EStopState::NONE ? "none" :
+                    estop_status == GCodeMachineControl::EStopState::SOFT ? "soft" :
+                    estop_status == GCodeMachineControl::EStopState::HARD ? "hard" : "unknown",
+                    home_status == GCodeMachineControl::HomingState::NEVER_HOMED ? "no" :
+                    home_status == GCodeMachineControl::HomingState::HOMED_BUT_MOTORS_UNPOWERED ? "maybe" :
+                    home_status == GCodeMachineControl::HomingState::HOMED ? "yes" : "unknown",
+		    machine->GetMotorsEnabled() ? "true" : "false");
+          }
+          return true;
+        });
+      return true;
+    });
+}
+
+// Create an absolute filename from a path, without the file not needed
+// to exist (so works where realpath() doesn't)
+static std::string MakeAbsoluteFile(const char *in) {
+  if (!in || in[0] == '\0') return "";
+  if (in[0] == '/') return in;
+  char buf[1024];
+  return std::string(getcwd(buf, sizeof(buf))) + "/" + in;
 }
 
 int main(int argc, char *argv[]) {
@@ -233,7 +303,7 @@ int main(int argc, char *argv[]) {
   bool dry_run = false;
   bool simulation_output = false;
   const char *logfile = NULL;
-  const char *paramfile = NULL;
+  std::string paramfile;
   const char *config_file = NULL;
   bool as_daemon = false;
   const char *privs = "daemon:daemon";
@@ -242,6 +312,7 @@ int main(int argc, char *argv[]) {
   enum LongOptionsOnly {
     OPT_HELP = 1000,
     OPT_SET_THRESHOLD_ANGLE,
+    OPT_SET_SPEED_TUNE_ANGLE,
     OPT_REQUIRE_HOMING,
     OPT_DONT_REQUIRE_HOMING,
     OPT_DISABLE_RANGE_CHECK,
@@ -249,6 +320,7 @@ int main(int argc, char *argv[]) {
     OPT_PRIVS,
     OPT_ENABLE_M111,
     OPT_PARAM_FILE,
+    OPT_STATUS_SERVER
   };
 
   static struct option long_options[] = {
@@ -271,21 +343,24 @@ int main(int argc, char *argv[]) {
     { "daemon",             no_argument,       NULL, 'd'},
     { "priv",               required_argument, NULL, OPT_PRIVS },
     { "allow-m111",         no_argument,       NULL, OPT_ENABLE_M111 },
+    { "status-server",      required_argument, NULL, OPT_STATUS_SERVER },
 
     // possibly deprecated soon.
     { "threshold-angle",    required_argument, NULL, OPT_SET_THRESHOLD_ANGLE },
+    { "speed-tune-angle",   required_argument, NULL, OPT_SET_SPEED_TUNE_ANGLE },
 
     { 0,                    0,                 0,    0  },
   };
 
   int listen_port = -1;
-  int file_loop_count = 1;
+  int status_server_port = -1;
   char *bind_addr = NULL;
   bool require_homing = false;
   bool dont_require_homing = false;
   bool disable_range_check = false;
   bool allow_m111 = false;
   config.threshold_angle = 10;
+  config.speed_tune_angle = 60;
   int opt;
   while ((opt = getopt_long(argc, argv, "p:b:SPnNf:l:dc:",
                             long_options, NULL)) != -1) {
@@ -297,6 +372,9 @@ int main(int argc, char *argv[]) {
       break;
     case OPT_SET_THRESHOLD_ANGLE:
       config.threshold_angle = (float)atof(optarg);
+      break;
+    case OPT_SET_SPEED_TUNE_ANGLE:
+      config.speed_tune_angle = (float)atof(optarg);
       break;
     case OPT_REQUIRE_HOMING:
       require_homing = true;
@@ -321,10 +399,14 @@ int main(int argc, char *argv[]) {
       config.synchronous = true;
       break;
     case OPT_LOOP:
-      file_loop_count = (optarg) ? atoi(optarg) : -1;
+      Log_error("--loop has been removed. Did you use it ? "
+                "Let beagleg-dev@googlegroups.com know");
       break;
     case 'p':
       listen_port = atoi(optarg);
+      break;
+    case OPT_STATUS_SERVER:
+      status_server_port = atoi(optarg);
       break;
     case 'b':
       bind_addr = strdup(optarg);
@@ -333,13 +415,15 @@ int main(int argc, char *argv[]) {
       logfile = strdup(optarg);
       break;
     case OPT_PARAM_FILE:
-      paramfile = strdup(optarg);
+      paramfile = MakeAbsoluteFile(optarg);
       break;
     case 'd':
       as_daemon = true;
       break;
     case 'c':
-      config_file = strdup(optarg);
+      config_file = realpath(optarg, NULL); // realpath() -> abs path if exists
+      if (!config_file)
+        config_file = strdup(optarg);  // Not existing. Report issue later.
       break;
     case OPT_PRIVS:
       privs = strdup(optarg);
@@ -355,6 +439,10 @@ int main(int argc, char *argv[]) {
     }
   }
 
+  if (config.threshold_angle + config.speed_tune_angle >= 90) {
+    return usage(argv[0], "--threshold-angle + --speed-tune-angle must be < 90 degrees.");
+  }
+
   if (require_homing && dont_require_homing) {
     return usage(argv[0], "Choose one: --homing-required or --nohoming-required.");
   }
@@ -363,14 +451,20 @@ int main(int argc, char *argv[]) {
   if (! (has_filename ^ (listen_port > 0))) {
     return usage(argv[0], "Choose one: <gcode-filename> or --port <port>.");
   }
-  if (!has_filename && file_loop_count != 1) {
-    return usage(argv[0], "--loop only makes sense with a filename.");
-  }
 
-  // As daemon, we use whatever the use chose as logfile
+  // As daemon, we use whatever the user chose as logfile
   // (including nothing->syslog). Interactive, nothing means stderr.
   Log_init(as_daemon ? logfile : (logfile == NULL ? "/dev/stderr" : logfile));
-  Log_info("Startup.");
+  Log_info("BeagleG " BEAGLEG_VERSION " startup; "
+           CAPE_NAME " hardware interface.");
+
+  if (config.threshold_angle > 0) {
+    const double deg2rad = M_PI / 180.0;
+    const double min_speed_adj = std::cos(config.speed_tune_angle * deg2rad);
+    const double max_speed_adj = std::cos((config.threshold_angle + config.speed_tune_angle) * deg2rad);
+    Log_debug("Speed-tuning from %.2f to %.2f for angles +/-%.2f degrees (speed-tune @ %.2f degrees)\n",
+              min_speed_adj, max_speed_adj, config.threshold_angle, config.speed_tune_angle);
+  }
 
   // If reading from file: don't print 'ok' for every line.
   config.acknowledge_lines = !has_filename;
@@ -378,6 +472,8 @@ int main(int argc, char *argv[]) {
   if (!config_file) {
     Log_error("Expected config file -c <config>");
     return 1;
+  } else {
+    Log_info("Reading config %s", config_file);
   }
 
   ConfigParser config_parser;
@@ -396,15 +492,14 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  Spindle spindle;
-  if (!spindle.ConfigureFromFile(&config_parser)) {
-    Log_error("Exiting. Parse error in configuration file '%s'", config_file);
+  SpindleConfig spindle_config;
+  if (!spindle_config.ConfigureFromFile(&config_parser)) {
+    Log_error("Exiting. Errors in spindle configuration in (%s)", config_file);
     return 1;
   }
-  if (!spindle.Init(&hardware_mapping)) {
-    Log_error("Exiting. Unable to initialize spindle");
-    return 1;
-  }
+
+  std::unique_ptr<Spindle> spindle(
+    Spindle::CreateFromConfig(spindle_config, &hardware_mapping));
 
   // ... other configurations that read from that file.
 
@@ -417,6 +512,7 @@ int main(int argc, char *argv[]) {
     Log_error("Can't become daemon: %s", strerror(errno));
   }
 
+  FDMultiplexer event_server;
   // Open socket early, so that we
   //  (a) can bail out early before messing with GPIO/PRU settings if
   //      someone is alrady listening (starting as daemon twice?).
@@ -460,42 +556,52 @@ int main(int argc, char *argv[]) {
       return 1;
     }
   }
-  Log_info("Running with PID %d", getpid());
+  Log_info("BeagleG running with PID %d", getpid());
 
-  MotionQueueMotorOperations motor_operations(motion_backend);
+  MotionQueueMotorOperations motor_operations(&hardware_mapping, motion_backend);
 
   GCodeMachineControl *machine_control
     = GCodeMachineControl::Create(config, &motor_operations,
-                                  &hardware_mapping, &spindle,
+                                  &hardware_mapping, spindle.get(),
                                   stderr);
   if (machine_control == NULL) {
     Log_error("Exiting. Cannot initialize machine control.");
     return 1;
   }
-  GCodeParser::Config parser_cfg;
+  GCodeParser::Config parser_cfg(paramfile);
+  parser_cfg.allow_m111 = allow_m111;
   GCodeParser::Config::ParamMap parameters;
   parser_cfg.parameters = &parameters;
-  if (paramfile) parser_cfg.LoadParams(paramfile);
+  parser_cfg.LoadParams();
 
   machine_control->GetHomePos(&parser_cfg.machine_origin);
   GCodeParser *parser = new GCodeParser(parser_cfg,
-                                        machine_control->ParseEventReceiver(),
-                                        allow_m111);
-
+                                        machine_control->ParseEventReceiver());
+  GCodeStreamer *streamer =
+    new GCodeStreamer(&event_server, parser,
+                      machine_control->ParseEventReceiver());
   int ret = 0;
   if (has_filename) {
     const char *filename = argv[optind];
-    ret = send_file_to_machine(machine_control, parser,
-                               filename, file_loop_count);
+    send_file_to_machine(machine_control, streamer, filename);
   } else {
-    ret = run_server(listen_socket, machine_control, parser,
-                     bind_addr, listen_port);
+    run_gcode_server(listen_socket, &event_server, machine_control,
+                     streamer,  bind_addr, listen_port);
   }
 
+  if (status_server_port > 0 && !has_filename) {
+    run_status_server(bind_addr, status_server_port,
+                      &event_server, machine_control);
+  }
+
+  event_server.Loop();  // Run service until Ctrl-C or all sockets closed.
+  Log_info("Exiting.");
+
+  delete streamer;
   delete parser;
   delete machine_control;
 
-  const bool caught_signal = (ret == 2);
+  const bool caught_signal = (ret == 1);
   if (caught_signal) {
     Log_info("Caught signal: immediate exit. "
              "Skipping potential remaining queue.");
@@ -507,7 +613,7 @@ int main(int argc, char *argv[]) {
 
   free(bind_addr);
 
-  if (paramfile) parser_cfg.SaveParams(paramfile);
+  parser_cfg.SaveParams();
 
   Log_info("Shutdown.");
   return ret;

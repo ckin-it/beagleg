@@ -10,7 +10,7 @@
 
 #include <gtest/gtest.h>
 
-#include "string-util.h"
+#include "common/string-util.h"
 
 // 'home' position of our simulated machine. Arbitrary values.
 #define HOME_X 123
@@ -42,10 +42,10 @@ public:
     config.machine_origin[AXIS_Y] = HOME_Y;
     config.machine_origin[AXIS_Z] = HOME_Z;
     config.parameters = &parameters_;
-    parser_ = new GCodeParser(config, this, false);
+    parser_ = new GCodeParser(config, this);
     EXPECT_EQ(0, parser_->error_count());
   }
-  virtual ~ParseTester() { delete parser_; }
+  ~ParseTester() override { delete parser_; }
 
   float get_parameter(int num) {
     return parameters_[StringPrintf("%d", num)];
@@ -58,47 +58,48 @@ public:
   // Main function to test. Returns 'false' if parsing failed.
   bool TestParseLine(const char *block) {
     int errors_before = parser_->error_count();
-    parser_->ParseLine(block, stderr);
+    parser_->ParseBlock(block, stderr);
     return parser_->error_count() == errors_before;
   }
 
-  virtual void gcode_start(GCodeParser *)     { Count(CALL_gcode_start); }
-  virtual void gcode_finished(bool)  { Count(CALL_gcode_finished); }
-  virtual void inform_origin_offset(const AxesRegister &offset) {
+  // -- gcode parser callbacks
+  void gcode_start(GCodeParser *) final { Count(CALL_gcode_start); }
+  void gcode_finished(bool) final { Count(CALL_gcode_finished); }
+  void inform_origin_offset(const AxesRegister &offset, const char *n) final {
     parser_offset = offset;
   }
-  virtual void go_home(AxisBitmap_t axis_bitmap) { Count(CALL_go_home); }
-  virtual bool probe_axis(float feed_mm_p_sec, enum GCodeParserAxis axis,
-                          float *probed_position) {
+  void go_home(AxisBitmap_t axis_bitmap) final { Count(CALL_go_home); }
+  bool probe_axis(float feed_mm_p_sec, enum GCodeParserAxis axis,
+                  float *probed_position) final {
     Count(CALL_probe_axis);
     *probed_position = PROBE_POSITION;
     return true;
   }
 
-  virtual void motors_enable(bool enable) { Count(CALL_motors_enable); }
-  virtual bool coordinated_move(float feed_mm_p_sec, const AxesRegister &axes) {
+  void motors_enable(bool enable) final { Count(CALL_motors_enable); }
+  bool coordinated_move(float feed_mm_p_sec, const AxesRegister &axes) override {
     Count(CALL_coordinated_move);
     abs_pos = axes;
     feedrate = feed_mm_p_sec;
     return true;
   }
-  virtual bool rapid_move(float feed_mm_p_sec, const AxesRegister &axes) {
+  bool rapid_move(float feed_mm_p_sec, const AxesRegister &axes) final {
     Count(CALL_rapid_move);
     abs_pos = axes;
     feedrate = feed_mm_p_sec;
     return true;
   }
-  virtual const char *unprocessed(char letter, float value, const char *line) {
+  const char *unprocessed(char letter, float value, const char *line) final {
     Count(CALL_unprocessed);
     return NULL;
   }
 
   // Not interested.
-  virtual void set_speed_factor(float factor) {}
-  virtual void set_fanspeed(float value) {}
-  virtual void set_temperature(float degrees_c) {}
-  virtual void wait_temperature() {}
-  virtual void dwell(float ms) {}
+  void set_speed_factor(float factor) final {}
+  void set_fanspeed(float value) final {}
+  void set_temperature(float degrees_c) final {}
+  void wait_temperature() final {}
+  void dwell(float ms) final {}
 
 public:
   // public counters.
@@ -445,7 +446,7 @@ TEST(GCodeParserTest, alphanumeric_parameters) {
 
   // If there is the <> delimiter, things can be squished together again.
   EXPECT_TRUE(counter.TestParseLine(
-                 "G1 #foo=160#bar=260#baz=360X#<foo>Y#<bar>Z#<baz>"));
+                "G1 #foo=160#bar=260#baz=360X#<foo>Y#<bar>Z#<baz>"));
   EXPECT_EQ(HOME_X + 160, counter.abs_pos[AXIS_X]);
   EXPECT_EQ(HOME_Y + 260, counter.abs_pos[AXIS_Y]);
   EXPECT_EQ(HOME_Z + 360, counter.abs_pos[AXIS_Z]);
@@ -465,84 +466,95 @@ TEST(GCodeParserTest, alphanumeric_parameters) {
   EXPECT_FALSE(counter.TestParseLine("#<3>=42"));
 }
 
-TEST(GCodeParserTest, set_system_origin) {
+// todo: test G28
+
+TEST(GCodeParserTest, CoordinateSystemNamesRepresentedIn5220) {
   ParseTester counter;
-
-  // set the G54 coordinate system to 100,100,0
-  counter.TestParseLine("G10 L2 P1 X100 Y100 Z0");
-
-  // make sure we are at the home position with no offset
-  counter.TestParseLine("G1 X0 Y0 Z0");
-  EXPECT_EQ(HOME_X, counter.abs_pos[AXIS_X]);
-  EXPECT_EQ(HOME_Y, counter.abs_pos[AXIS_Y]);
-  EXPECT_EQ(HOME_Z, counter.abs_pos[AXIS_Z]);
-  EXPECT_EQ(HOME_X, counter.parser_offset[AXIS_X]);
-  EXPECT_EQ(HOME_Y, counter.parser_offset[AXIS_Y]);
-  EXPECT_EQ(HOME_Z, counter.parser_offset[AXIS_Z]);
-
-  // change to the G54 coordinate system
-  counter.TestParseLine("G54");
-  EXPECT_EQ(1, counter.get_parameter(5220));
-
-  // the machine is not expected to move
-  EXPECT_EQ(HOME_X, counter.abs_pos[AXIS_X]);
-  EXPECT_EQ(HOME_Y, counter.abs_pos[AXIS_Y]);
-  EXPECT_EQ(HOME_Z, counter.abs_pos[AXIS_Z]);
-  // the offset should be set
-  EXPECT_EQ(100, counter.parser_offset[AXIS_X]);
-  EXPECT_EQ(100, counter.parser_offset[AXIS_Y]);
-  EXPECT_EQ(0, counter.parser_offset[AXIS_Z]);
-
-  // test the remaing GCodes
-  EXPECT_TRUE(counter.TestParseLine("G55"));
-  EXPECT_EQ(2, counter.get_parameter(5220));
-
-  EXPECT_TRUE(counter.TestParseLine("G56"));
-  EXPECT_EQ(3, counter.get_parameter(5220));
-
-  EXPECT_TRUE(counter.TestParseLine("G57"));
-  EXPECT_EQ(4, counter.get_parameter(5220));
-
-  EXPECT_TRUE(counter.TestParseLine("G58"));
-  EXPECT_EQ(5, counter.get_parameter(5220));
-
-  EXPECT_TRUE(counter.TestParseLine("G59"));
-  EXPECT_EQ(6, counter.get_parameter(5220));
-
-  EXPECT_TRUE(counter.TestParseLine("G59.1"));
-  EXPECT_EQ(7, counter.get_parameter(5220));
-
-  EXPECT_TRUE(counter.TestParseLine("G59.2"));
-  EXPECT_EQ(8, counter.get_parameter(5220));
-
-  EXPECT_TRUE(counter.TestParseLine("G59.3"));
-  EXPECT_EQ(9, counter.get_parameter(5220));
+  const char *coord_systems[9] = { "G54", "G55", "G56", "G57", "G58", "G59",
+                                   "G59.1", "G59.2", "G59.3" };
+  for (int i = 0; i < 9; ++i) {
+    EXPECT_TRUE(counter.TestParseLine(coord_systems[i]));
+    EXPECT_EQ(i+1, counter.get_parameter(5220));
+  }
 
   // this one should fail as we attempt to choose an invalid coordinate system.
   EXPECT_FALSE(counter.TestParseLine("G59.4"));
   EXPECT_EQ(9, counter.get_parameter(5220));     // kept at prev. coord system.
+}
+
+TEST(GCodeParserTest, SetCoordinateSystemG10) {
+  ParseTester counter;
+
+  // Set the G55 coordinate system to 100,100,0 relative to machine home.
+  counter.TestParseLine("G10 L2 P2 X100 Y100 Z0");
+
+  // We're still in G54 which has a default offset of (0,0,0), so our display
+  // offset is zero relative to home.
+  EXPECT_EQ(1, counter.get_parameter(5220));  // current coordinate system.
+  EXPECT_EQ(HOME_X, counter.parser_offset[AXIS_X]);
+  EXPECT_EQ(HOME_Y, counter.parser_offset[AXIS_Y]);
+  EXPECT_EQ(HOME_Z, counter.parser_offset[AXIS_Z]);
+
+  // When switching to G55, the display offset is shifted.
+  counter.TestParseLine("G55");
+  EXPECT_EQ(2, counter.get_parameter(5220));  // current coordinate system.
+  EXPECT_EQ(HOME_X + 100, counter.parser_offset[AXIS_X]);
+  EXPECT_EQ(HOME_Y + 100, counter.parser_offset[AXIS_Y]);
+  EXPECT_EQ(HOME_Z, counter.parser_offset[AXIS_Z]);
+
+  // Moving in G55 coordinate system now should move us to the given offsets
+  counter.TestParseLine("G1 X0 Y0 Z0");
+
+  // the machine-pos is now home + new origin offset
+  EXPECT_EQ(HOME_X + 100, counter.abs_pos[AXIS_X]);
+  EXPECT_EQ(HOME_Y + 100, counter.abs_pos[AXIS_Y]);
+  EXPECT_EQ(HOME_Z, counter.abs_pos[AXIS_Z]);
 
   // set the G56 coordinate system to 25,50,10
   EXPECT_TRUE(counter.TestParseLine("G10 L2 P3 X25 Y50 Z10"));
   EXPECT_TRUE(counter.TestParseLine("G56"));
-  // the machine is still not expected to move
-  EXPECT_EQ(HOME_X, counter.abs_pos[AXIS_X]);
-  EXPECT_EQ(HOME_Y, counter.abs_pos[AXIS_Y]);
+
+  // The display offset are now different ...
+  EXPECT_EQ(HOME_X + 25, counter.parser_offset[AXIS_X]);
+  EXPECT_EQ(HOME_Y + 50, counter.parser_offset[AXIS_Y]);
+  EXPECT_EQ(HOME_Z + 10, counter.parser_offset[AXIS_Z]);
+
+  // .. but the machine is not expected to have moved for its current abs pos.
+  EXPECT_EQ(HOME_X + 100, counter.abs_pos[AXIS_X]);
+  EXPECT_EQ(HOME_Y + 100, counter.abs_pos[AXIS_Y]);
   EXPECT_EQ(HOME_Z, counter.abs_pos[AXIS_Z]);
-  // the offset should be set
-  EXPECT_EQ(25, counter.parser_offset[AXIS_X]);
-  EXPECT_EQ(50, counter.parser_offset[AXIS_Y]);
-  EXPECT_EQ(10, counter.parser_offset[AXIS_Z]);
-  // move to the new origin
+
+  // Move to the new origin
   counter.TestParseLine("G1 X0 Y0 Z0");
-  EXPECT_EQ(25, counter.abs_pos[AXIS_X]);
-  EXPECT_EQ(50, counter.abs_pos[AXIS_Y]);
-  EXPECT_EQ(10, counter.abs_pos[AXIS_Z]);
+  EXPECT_EQ(HOME_X + 25, counter.abs_pos[AXIS_X]);
+  EXPECT_EQ(HOME_Y + 50, counter.abs_pos[AXIS_Y]);
+  EXPECT_EQ(HOME_Z + 10, counter.abs_pos[AXIS_Z]);
+}
+
+TEST(GCodeParserTest, SetCoordinateSystemG10_G90_G91) {
+  ParseTester counter;
+
+  // Set the G55 coordinate system to 100,100,0 in absolute
+  // coordinates (G90), i.e. relative to machine origin.
+  counter.TestParseLine("G90 G10 L2 P2 X100 Y100 Z0");
+
+  // When switching to G55, the display offset is shifted.
+  counter.TestParseLine("G55");
+  EXPECT_EQ(2, counter.get_parameter(5220));  // current coordinate system.
+  EXPECT_EQ(HOME_X + 100, counter.parser_offset[AXIS_X]);
+  EXPECT_EQ(HOME_Y + 100, counter.parser_offset[AXIS_Y]);
+  EXPECT_EQ(HOME_Z, counter.parser_offset[AXIS_Z]);
+
+  // Now, switching to relative mode with G91, update the coordinate.
+  counter.TestParseLine("G91 G10 L2 P2 X5 Y5 Z5");
+  EXPECT_EQ(HOME_X + 100 + 5, counter.parser_offset[AXIS_X]);
+  EXPECT_EQ(HOME_Y + 100 + 5, counter.parser_offset[AXIS_Y]);
+  EXPECT_EQ(HOME_Z + 5, counter.parser_offset[AXIS_Z]);
 }
 
 class ArcTester : public ParseTester {
 public:
-  virtual bool coordinated_move(float feed_mm_p_sec, const AxesRegister &axes) {
+  bool coordinated_move(float feed_mm_p_sec, const AxesRegister &axes) final {
     ParseTester::coordinated_move(feed_mm_p_sec, axes);
     if (!expect_radius_)
       return true;  // Not checking for circleness yet.

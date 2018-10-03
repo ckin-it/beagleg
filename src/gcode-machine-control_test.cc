@@ -14,9 +14,10 @@
 
 #include <gtest/gtest.h>
 
-#include "gcode-parser.h"
+#include "gcode-parser/gcode-parser.h"
+#include "common/logging.h"
+
 #include "hardware-mapping.h"
-#include "logging.h"
 #include "motor-operations.h"
 
 #define END_SENTINEL 0x42
@@ -25,11 +26,13 @@
 static void init_test_config(struct MachineControlConfig *c,
                              HardwareMapping *hmap) {
   for (int i = 0; i <= AXIS_Z; ++i) {
-    c->steps_per_mm[i] = 100;  // step/mm
-    c->acceleration[i] = 1000;  // mm/s^2
-    c->max_feedrate[i] = (i+1) * 1000;
+    const GCodeParserAxis axis = (GCodeParserAxis) i;
+    c->steps_per_mm[axis] = 100;  // step/mm
+    c->acceleration[axis] = 1000;  // mm/s^2
+    c->max_feedrate[axis] = (i+1) * 1000;
   }
   c->threshold_angle = 0;
+  c->speed_tune_angle = 0;
   c->require_homing = false;
 }
 
@@ -45,15 +48,17 @@ public:
     EXPECT_EQ(END_SENTINEL, current_->aux_bits);  // reached end ?
   }
 
-  virtual void Enqueue(const LinearSegmentSteps &param) {
+  void Enqueue(const LinearSegmentSteps &param) final {
     const int number = (int)(current_ - expect_);
     EXPECT_NE(END_SENTINEL, current_->aux_bits);
     ExpectEq(current_, param, number);
     ++current_;
   }
 
-  virtual void MotorEnable(bool on) {}
-  virtual void WaitQueueEmpty(){}
+  void MotorEnable(bool on) final {}
+  void WaitQueueEmpty() final {}
+  bool GetPhysicalStatus(PhysicalStatus *status) final { return false; }
+  void SetExternalPosition(int axis, int steps) final { }
 
 private:
   // Helpers to compare and print MotorMovements.

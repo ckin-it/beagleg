@@ -23,10 +23,11 @@
 
 #include <stdlib.h>
 
+#include "common/logging.h"
+#include "common/string-util.h"
+
 #include "config-parser.h"
-#include "logging.h"
 #include "motor-operations.h"
-#include "string-util.h"
 
 // Default order in which axes should be homed.
 static const char kHomeOrder[] = "ZXY";
@@ -37,10 +38,12 @@ MachineControlConfig::MachineControlConfig() {
   debug_print = false;
   synchronous = false;
   range_check = true;
+  clamp_to_range = "";
   require_homing = true;
   enable_pause = false;
   home_order = kHomeOrder;
   threshold_angle = -1;
+  speed_tune_angle = 0;
   auto_motor_disable_seconds = -1;
   auto_fan_disable_seconds = -1;
   auto_fan_pwm = 0;
@@ -53,7 +56,7 @@ public:
   MachineControlConfigReader(MachineControlConfig *config)
     : config_(config) {}
 
-  virtual bool SeenSection(int line_no, const std::string &section_name) {
+  bool SeenSection(int line_no, const std::string &section_name) final {
     current_section_ = section_name;
     if (section_name == "general")
       return true;
@@ -69,9 +72,9 @@ public:
     return false;
   }
 
-  virtual bool SeenNameValue(int line_no,
-                             const std::string &name,
-                             const std::string &value) {
+  bool SeenNameValue(int line_no,
+                     const std::string &name,
+                     const std::string &value) final {
 #define ACCEPT_VALUE(n, T, result) if (name != n) {} else return Parse##T(value, result)
 #define ACCEPT_EXPR(n, result) if (name != n) {} else return ParseFloatExpr(value, result)
 
@@ -79,6 +82,7 @@ public:
       ACCEPT_VALUE("home-order",     String, &config_->home_order);
       ACCEPT_VALUE("require-homing", Bool,   &config_->require_homing);
       ACCEPT_VALUE("range-check",    Bool,   &config_->range_check);
+      ACCEPT_VALUE("clamp-to-range", String, &config_->clamp_to_range);
       ACCEPT_VALUE("synchronous",    Bool,   &config_->synchronous);
       ACCEPT_VALUE("enable-pause",   Bool,   &config_->enable_pause);
       ACCEPT_VALUE("auto-motor-disable-seconds",
@@ -110,7 +114,7 @@ public:
     return false;
   }
 
-  virtual void ReportError(int line_no, const std::string &msg) {
+  void ReportError(int line_no, const std::string &msg) final {
     Log_error("Line %d: %s", line_no, msg.c_str());
   }
 

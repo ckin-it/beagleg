@@ -27,10 +27,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <strings.h>
+#include <deque>
+
+#include "common/logging.h"
 
 #include "motor-interface-constants.h"
 #include "motion-queue.h"
-#include "logging.h"
+#include "hardware-mapping.h"
 
 // We need two loops per motor step (edge up, edge down),
 // So we need to multiply step-counts by 2
@@ -84,10 +87,41 @@ static char test_acceleration_ok(float acceleration) {
 }
 #endif
 
+// Used to keep track of useful attributes of a motion segment's target move.
+struct HistoryPositionInfo {
+  HistoryPositionInfo () : position_steps(0), sign(1) {}
+  int position_steps; // Absolute position at the end of the move.
+  uint32_t fraction;  // 1/0xffffffff-th of the difference between the previous
+                      // step and now.
+  signed char sign;   // Sense of the move.
+};
+
+// Store the required informations needed to backtrack the absolute position.
+struct MotionQueueMotorOperations::HistorySegment {
+  HistoryPositionInfo pos_info[MOTION_MOTOR_COUNT];
+  unsigned short aux_bits;
+};
+
+MotionQueueMotorOperations::
+MotionQueueMotorOperations(HardwareMapping *hw, MotionQueue *backend)
+  : hardware_mapping_(hw),
+    backend_(backend),
+    shadow_queue_(new std::deque<struct HistorySegment>()) {
+  // Initialize the history queue.
+  shadow_queue_->push_front({});
+}
+
+MotionQueueMotorOperations::~MotionQueueMotorOperations() {
+  delete shadow_queue_;
+}
+
 void MotionQueueMotorOperations::EnqueueInternal(const LinearSegmentSteps &param,
                                                  int defining_axis_steps) {
   struct MotionSegment new_element = {};
   new_element.direction_bits = 0;
+
+  // The new segment is based on the previous position.
+  struct HistorySegment history_segment = shadow_queue_->front();
 
   // The defining_axis_steps is the number of steps of the axis that requires
   // the most number of steps. All the others are a fraction of the steps.
@@ -97,12 +131,22 @@ void MotionQueueMotorOperations::EnqueueInternal(const LinearSegmentSteps &param
   // and 1 bit that overflows and toggles for the steps we want to generate.
   const uint64_t max_fraction = 0xFFFFFFFF / LOOPS_PER_STEP;
   for (int i = 0; i < MOTION_MOTOR_COUNT; ++i) {
+    bool flip = hardware_mapping_->IsMotorFlipped(i);
     if (param.steps[i] < 0) {
-      new_element.direction_bits |= (1 << i);
+      if (!flip) new_element.direction_bits |= (1 << i);
+      history_segment.pos_info[i].sign = -1;
+    } else {
+      if (flip) new_element.direction_bits |= (1 << i);
+      history_segment.pos_info[i].sign = 1;
     }
+    history_segment.pos_info[i].position_steps += param.steps[i];
     const uint64_t delta = abs(param.steps[i]);
     new_element.fractions[i] = delta * max_fraction / defining_axis_steps;
+    history_segment.pos_info[i].fraction = new_element.fractions[i];
   }
+
+  history_segment.aux_bits = param.aux_bits;
+  shadow_queue_->push_front(history_segment);
 
   // TODO: clamp acceleration to be a minimum value.
   const int total_loops = LOOPS_PER_STEP * defining_axis_steps;
@@ -153,6 +197,51 @@ void MotionQueueMotorOperations::EnqueueInternal(const LinearSegmentSteps &param
   backend_->Enqueue(&new_element);
 }
 
+bool MotionQueueMotorOperations::GetPhysicalStatus(PhysicalStatus *status) {
+  // Shrink the queue
+  uint32_t loops;
+  const int buffer_size = backend_->GetPendingElements(&loops);
+  const int new_size = buffer_size > 0 ? buffer_size : 1;
+  shadow_queue_->resize(new_size);
+
+  // Get the last element
+  const HistorySegment &hs = shadow_queue_->back();
+  const uint64_t max_fraction = 0xFFFFFFFF / LOOPS_PER_STEP;
+
+  // NOTE: Assuming MOTION_MOTOR_COUNT == BEAGLEG_NUM_MOTORS
+  uint64_t steps;
+  for (int i = 0; i < MOTION_MOTOR_COUNT; ++i) {
+    const HistoryPositionInfo pos_info = hs.pos_info[i];
+    // Let's round-up the division, 5.1 is still a toggle, so it's 6 loops.
+    steps = loops / LOOPS_PER_STEP;
+    steps *= pos_info.fraction;
+    steps += max_fraction - 1;
+    steps /= max_fraction;
+    status->pos_steps[i] = pos_info.position_steps - pos_info.sign * (int) steps;
+  }
+  status->aux_bits = hs.aux_bits;
+  return true;
+}
+
+void MotionQueueMotorOperations::SetExternalPosition(int axis, int steps) {
+  struct HistorySegment history_segment = shadow_queue_->front();
+  if (steps < 0) {
+    history_segment.pos_info[axis].sign = -1;
+    history_segment.pos_info[axis].position_steps = -steps;
+  } else {
+    history_segment.pos_info[axis].sign = 1;
+    history_segment.pos_info[axis].position_steps = steps;
+  }
+  shadow_queue_->push_front(history_segment);
+  // Shrink the queue and remove the elements that we are not interested
+  // in anymore.
+  // TODO: We need to find a way to get the maximum number of elements
+  // of the shadow queue (ie backend_->GetQueueStats()?)
+  const int buffer_size = backend_->GetPendingElements(NULL);
+  const int new_size = buffer_size > 0 ? buffer_size : 1;
+  shadow_queue_->resize(new_size);
+}
+
 static int get_defining_axis_steps(const LinearSegmentSteps &param) {
   int defining_axis_steps = abs(param.steps[0]);
   for (int i = 1; i < BEAGLEG_NUM_MOTORS; ++i) {
@@ -167,10 +256,17 @@ void MotionQueueMotorOperations::Enqueue(const LinearSegmentSteps &param) {
   const int defining_axis_steps = get_defining_axis_steps(param);
 
   if (defining_axis_steps == 0) {
+    // The new segment is based on the previous position.
+    struct HistorySegment history_segment = shadow_queue_->front();
+
     // No move, but we still have to set the bits.
     struct MotionSegment empty_element = {};
     empty_element.aux = param.aux_bits;
     empty_element.state = STATE_FILLED;
+
+    history_segment.aux_bits = param.aux_bits;
+    shadow_queue_->push_front(history_segment);
+
     backend_->Enqueue(&empty_element);
   }
   else if (defining_axis_steps > MAX_STEPS_PER_SEGMENT) {
@@ -214,6 +310,13 @@ void MotionQueueMotorOperations::Enqueue(const LinearSegmentSteps &param) {
   } else {
     EnqueueInternal(param, defining_axis_steps);
   }
+  // Shrink the queue and remove the elements that we are not interested
+  // in anymore.
+  // TODO: We need to find a way to get the maximum number of elements
+  // of the shadow queue (ie backend_->GetQueueStats()?)
+  const int buffer_size = backend_->GetPendingElements(NULL);
+  const int new_size = buffer_size > 0 ? buffer_size : 1;
+  shadow_queue_->resize(new_size);
 }
 
 void MotionQueueMotorOperations::MotorEnable(bool on) {

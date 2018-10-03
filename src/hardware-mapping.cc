@@ -22,15 +22,17 @@
 #include <unistd.h>
 #include <sys/types.h>
 
+#include "common/logging.h"
+#include "common/string-util.h"
+
 #include "config-parser.h"
-#include "logging.h"
 #include "generic-gpio.h"
 #include "pwm-timer.h"
 #include "motor-operations.h"  // LinearSegmentSteps
-#include "string-util.h"
 
 HardwareMapping::HardwareMapping()
-  : estop_input_(0), pause_input_(0), start_input_(0), aux_bits_(0),
+  : estop_input_(0), pause_input_(0), start_input_(0), probe_input_(0),
+    estop_state_(true), motors_enabled_(false), aux_bits_(0),
     is_hardware_initialized_(false) {
 }
 
@@ -42,7 +44,7 @@ HardwareMapping::~HardwareMapping() {
   }
 }
 
-bool HardwareMapping::AddAuxMapping(LogicOutput output, int aux) {
+bool HardwareMapping::AddAuxMapping(NamedOutput output, int aux) {
   if (aux == 0) return true;  // allowed null-mapping
   if (aux < 1 || aux > NUM_BOOL_OUTPUTS) {
     Log_error("Aux %d out of range [%d..%d]", aux, 1, NUM_BOOL_OUTPUTS);
@@ -53,19 +55,24 @@ bool HardwareMapping::AddAuxMapping(LogicOutput output, int aux) {
     Log_info("Mapping '%s' to aux %d which has no hardware connector for %s"
              "; output will be ignored for this cape.",
              OutputToName(output), aux, CAPE_NAME);
+    Log_debug("(no #define AUX_%d_GPIO in hardware/%s/beagleg-pin-mapping.h)",
+              aux, CAPE_NAME);
     return true;  // This is not fatal, but no need to prepare these bits.
   }
   output_to_aux_bits_[output] |= 1 << (aux-1);
   return true;
 }
+bool HardwareMapping::HasAuxMapping(NamedOutput output) const {
+  return output_to_aux_bits_[output] != 0;
+}
 
-bool HardwareMapping::AddPWMMapping(LogicOutput output, int pwm) {
+bool HardwareMapping::AddPWMMapping(NamedOutput output, int pwm) {
   if (pwm == 0) return true;  // allowedd null-mapping
   if (pwm < 1 || pwm > NUM_PWM_OUTPUTS) {
     Log_error("PWM %d out of range [%d..%d]", pwm, 1, NUM_BOOL_OUTPUTS);
     return false;
   }
-  if (output_to_pwm_gpio_[output] != GPIO_NOT_MAPPED) {
+  if (HasPWMMapping(output)) {
     // TODO: do we want to allow 1:n mapping, same output, multiple pins ?
     Log_error("Attempt to map '%s' which is already "
               "mapped to different pin", OutputToName(output));
@@ -74,11 +81,16 @@ bool HardwareMapping::AddPWMMapping(LogicOutput output, int pwm) {
   const uint32_t gpio_descriptor = get_pwm_gpio_descriptor(pwm);
   if (gpio_descriptor == GPIO_NOT_MAPPED) {
     Log_info("Mapping '%s' to pwm %d which has no hardware connector for %s"
-             " ; output will be ignored for this cape.",
+             "; output will be ignored for this cape.",
              OutputToName(output), pwm, CAPE_NAME);
+    Log_debug("(no #define PWM_%d_GPIO in hardware/%s/beagleg-pin-mapping.h)",
+              pwm, CAPE_NAME);
   }
   output_to_pwm_gpio_[output] = gpio_descriptor;
   return true;
+}
+bool HardwareMapping::HasPWMMapping(NamedOutput output) const {
+  return output_to_pwm_gpio_[output] != GPIO_NOT_MAPPED;
 }
 
 bool HardwareMapping::AddMotorMapping(LogicAxis axis, int motor,
@@ -105,6 +117,10 @@ int HardwareMapping::GetFirstFreeMotor() {
   return 0;
 }
 
+bool HardwareMapping::IsMotorFlipped(int motor) {
+  return driver_flip_[motor] == -1;
+}
+
 bool HardwareMapping::InitializeHardware() {
   if (geteuid() != 0) {
     Log_error("Need to run as root to access GPIO pins.");
@@ -114,10 +130,15 @@ bool HardwareMapping::InitializeHardware() {
     Log_error("Couldn't mmap() GPIO ranges.\n");
     return false;
   }
+
+#ifdef _DISABLE_PWM_TIMERS
+  Log_info("PWM timers are disabled.\n");
+#else
   if (!pwm_timers_map()) {
     Log_error("Couldn't mmap() TIMER ranges.\n");
     return false;
   }
+
 
   // The PWM_*_GPIO pins can produce PWM signals if they are mapped to one
   // of the TIMER pins and the dts set the pins to the correct mode (0x02).
@@ -135,6 +156,7 @@ bool HardwareMapping::InitializeHardware() {
   pwm_timer_set_freq(PWM_2_GPIO, 0);
   pwm_timer_set_freq(PWM_3_GPIO, 0);
   pwm_timer_set_freq(PWM_4_GPIO, 0);
+#endif
 
   is_hardware_initialized_ = true;
   ResetHardware();
@@ -167,11 +189,13 @@ void HardwareMapping::ResetHardware() {
 
 void HardwareMapping::EnableMotors(bool on) {
   if (!is_hardware_initialized_) return;
+  if (on && InSoftEStop()) return;
   // Right now, we just have this hardcoded, but if 'enable' should
   // ever be configurable via config file and not given by the hardware
   // mapping include, we can do that here.
   if (on ^ MOTOR_ENABLE_IS_ACTIVE_HIGH) clr_gpio(MOTOR_ENABLE_GPIO);
   else set_gpio(MOTOR_ENABLE_GPIO);
+  motors_enabled_ = on;
 }
 
 HardwareMapping::AuxBitmap HardwareMapping::GetAuxBits() {
@@ -187,9 +211,11 @@ void HardwareMapping::UpdateAuxBits(int pin, bool is_on) {
   else       aux_bits_ &= ~(1 << (pin - 1));
 }
 
-void HardwareMapping::UpdateAuxBitmap(LogicOutput type, bool is_on) {
+void HardwareMapping::UpdateAuxBitmap(NamedOutput type, bool is_on) {
   if (is_on) aux_bits_ |= output_to_aux_bits_[type];
   else       aux_bits_ &= ~output_to_aux_bits_[type];
+
+  if (type == NamedOutput::ESTOP) estop_state_ = is_on;  // Estop: special attention.
 }
 
 void HardwareMapping::SetAuxOutputs() {
@@ -200,7 +226,23 @@ void HardwareMapping::SetAuxOutputs() {
   }
 }
 
-void HardwareMapping::SetPWMOutput(LogicOutput type, float value) {
+void HardwareMapping::AuxOutputsOff() {
+  aux_bits_ = 0;
+  SetAuxOutputs();
+}
+
+bool HardwareMapping::InSoftEStop() {
+  return estop_state_;
+}
+
+bool HardwareMapping::MotorsEnabled() {
+  return motors_enabled_;
+}
+
+void HardwareMapping::SetPWMOutput(NamedOutput type, float value) {
+#ifdef _DISABLE_PWM_TIMERS
+  return;
+#else
   if (!is_hardware_initialized_) return;
   const uint32_t gpio = output_to_pwm_gpio_[type];
   if (value <= 0.0) {
@@ -209,6 +251,7 @@ void HardwareMapping::SetPWMOutput(LogicOutput type, float value) {
     pwm_timer_set_duty(gpio, value);
     pwm_timer_start(gpio, true);
   }
+#endif
 }
 
 std::string HardwareMapping::DebugMotorString(LogicAxis axis) {
@@ -229,9 +272,23 @@ void HardwareMapping::AssignMotorSteps(LogicAxis axis, int steps,
   const MotorBitmap motormap_for_axis = axis_to_driver_[axis];
   for (int motor = 0; motor < NUM_MOTORS; ++motor) {
     if (motormap_for_axis & (1 << motor)) {
-      out->steps[motor] = driver_flip_[motor] * steps;
+      out->steps[motor] = steps;
     }
   }
+}
+
+int HardwareMapping::GetAxisSteps(LogicAxis axis, const PhysicalStatus &status) {
+  uint8_t mask = axis_to_driver_[axis];
+  int m = 0;
+  while (((mask & 0x01) != 0x01) && m < NUM_MOTORS) {
+    // while the first bit is not 1, iterate.
+    mask = mask >> 1;
+    m++;
+  }
+
+  // Maybe this axis is not mapped to any motor.
+  if (m == NUM_MOTORS) return 0;
+  return status.pos_steps[m];
 }
 
 HardwareMapping::AxisTrigger HardwareMapping::AvailableAxisSwitch(LogicAxis axis) {
@@ -245,59 +302,44 @@ HardwareMapping::AxisTrigger HardwareMapping::AvailableAxisSwitch(LogicAxis axis
   return (AxisTrigger) result;  // Safe to cast: all within range.
 }
 
+bool HardwareMapping::TestSwitch(const int switch_number, bool def_result) {
+  if (!is_hardware_initialized_) return def_result;
+  GPIODefinition gpio_def = get_endstop_gpio_descriptor(switch_number);
+  if (gpio_def != GPIO_NOT_MAPPED)
+    return (get_gpio(gpio_def) == trigger_level_[switch_number-1]);
+  return def_result;
+}
+
 bool HardwareMapping::TestAxisSwitch(LogicAxis axis, AxisTrigger requested_trigger) {
-  if (!is_hardware_initialized_) return false;
   bool result = false;
-  GPIODefinition gpio_def;
-  if (requested_trigger & TRIGGER_MIN) {
-    const int switch_number = axis_to_min_endstop_[axis];
-    gpio_def = get_endstop_gpio_descriptor(switch_number);
-    if (gpio_def != GPIO_NOT_MAPPED)
-      result |= (get_gpio(gpio_def) == trigger_level_[switch_number-1]);
-  }
-  if (requested_trigger & TRIGGER_MAX) {
-    const int switch_number = axis_to_max_endstop_[axis];
-    gpio_def = get_endstop_gpio_descriptor(switch_number);
-    if (gpio_def != GPIO_NOT_MAPPED)
-      result |= (get_gpio(gpio_def) == trigger_level_[switch_number-1]);
-  }
+  if (requested_trigger & TRIGGER_MIN)
+    result |= TestSwitch(axis_to_min_endstop_[axis], false);
+  if (requested_trigger & TRIGGER_MAX)
+    result |= TestSwitch(axis_to_max_endstop_[axis], false);
   return result;
 }
 
 bool HardwareMapping::TestEStopSwitch() {
-  if (!is_hardware_initialized_) return false;
-  bool result = false;
-  const int switch_number = estop_input_;
-  GPIODefinition gpio_def = get_endstop_gpio_descriptor(switch_number);
-  if (gpio_def != GPIO_NOT_MAPPED)
-    result |= (get_gpio(gpio_def) == trigger_level_[switch_number-1]);
-  return result;
+  return TestSwitch(estop_input_, false);
 }
 
 bool HardwareMapping::TestPauseSwitch() {
-  if (!is_hardware_initialized_) return false;
-  bool result = false;
-  const int switch_number = pause_input_;
-  GPIODefinition gpio_def = get_endstop_gpio_descriptor(switch_number);
-  if (gpio_def != GPIO_NOT_MAPPED)
-    result |= (get_gpio(gpio_def) == trigger_level_[switch_number-1]);
-  return result;
+  return TestSwitch(pause_input_, false);
 }
 
 bool HardwareMapping::TestStartSwitch() {
-  if (!is_hardware_initialized_) return true;
-  const int switch_number = start_input_;
-  GPIODefinition gpio_def = get_endstop_gpio_descriptor(switch_number);
-  if (gpio_def != GPIO_NOT_MAPPED)
-    return (get_gpio(gpio_def) == trigger_level_[switch_number-1]);
-  return true;
+  return TestSwitch(start_input_, true);
+}
+
+bool HardwareMapping::TestProbeSwitch() {
+  return TestSwitch(probe_input_, true);
 }
 
 class HardwareMapping::ConfigReader : public ConfigParser::Reader {
 public:
   ConfigReader(HardwareMapping *config) : config_(config){}
 
-  virtual bool SeenSection(int line_no, const std::string &section_name) {
+  bool SeenSection(int line_no, const std::string &section_name) final {
     current_section_ = section_name;
     return (section_name == "aux-mapping" ||
             section_name == "pwm-mapping" ||
@@ -305,10 +347,9 @@ public:
             section_name == "motor-mapping");
   }
 
-  virtual bool SeenNameValue(int line_no,
-                             const std::string &name,
-                             const std::string &value) {
-
+  bool SeenNameValue(int line_no,
+                     const std::string &name,
+                     const std::string &value) final {
     if (current_section_ == "aux-mapping") {
       for (int i = 1; i <= NUM_BOOL_OUTPUTS; ++i) {
         if (name == StringPrintf("aux_%d", i)) {
@@ -345,24 +386,24 @@ public:
     return false;
   }
 
-  virtual void ReportError(int line_no, const std::string &msg) {
+  void ReportError(int line_no, const std::string &msg) final {
     Log_error("Line %d: %s", line_no, msg.c_str());
   }
 
 private:
   bool SetAuxMapping(int line_no, int aux_number, const std::string &value) {
-    LogicOutput output;
+    NamedOutput output;
     if (NameToOutput(value, &output)) {
-      if (output == OUT_HOTEND || output == OUT_HEATEDBED) {
+      if (output == NamedOutput::HOTEND || output == NamedOutput::HEATEDBED) {
         ReportError(line_no, "It is a dangerous to connect hotends "
                     "or heated beds to a boolean output. Use a PWM output!");
         return false;
       }
-      if (aux_number == 16 && output != OUT_LED) {
+      if (aux_number == 16 && output != NamedOutput::LED) {
         ReportError(line_no, "Aux 16 can only be mapped to an led!");
         return false;
       }
-      if (output == OUT_LED && aux_number != 16) {
+      if (output == NamedOutput::LED && aux_number != 16) {
         ReportError(line_no, "An led can only be mapped to Aux 16!");
         return false;
       }
@@ -376,7 +417,7 @@ private:
   }
 
   bool SetPwmMapping(int line_no, int pwm_number, const std::string &value) {
-    LogicOutput output;
+    NamedOutput output;
     if (NameToOutput(value, &output)) {
       Log_debug("Pwm %d -> %s", pwm_number, value.c_str());
       return config_->AddPWMMapping(output, pwm_number);
@@ -435,6 +476,9 @@ private:
       else if (option == "start") {
         config_->start_input_ = switch_number;
       }
+      else if (option == "probe") {
+        config_->probe_input_ = switch_number;
+      }
       else if (option.length() == 5) {
         const GCodeParserAxis axis = gcodep_letter2axis(option[4]);
         if (axis == GCODE_NUM_AXES) {
@@ -488,46 +532,49 @@ bool HardwareMapping::ConfigureFromFile(ConfigParser *parser) {
   return parser->EmitConfigValues(&reader);
 }
 
-const char *HardwareMapping::OutputToName(LogicOutput output) {
+const char *HardwareMapping::OutputToName(NamedOutput output) {
   switch (output) {
-  case OUT_MIST:        return "mist";
-  case OUT_FLOOD:       return "flood";
-  case OUT_VACUUM:      return "vacuum";
-  case OUT_SPINDLE:     return "spindle";
-  case OUT_SPINDLE_SPEED:  return "spindle-speed";
-  case OUT_SPINDLE_DIRECTION: return "spindle-dir";
-  case OUT_COOLER:      return "cooler";
-  case OUT_CASE_LIGHTS: return "case-lights";
-  case OUT_FAN:         return "fan";
-  case OUT_HOTEND:      return "hotend";
-  case OUT_HEATEDBED:   return "heatedbed";
-  case OUT_LED:         return "led";
-  case OUT_ATX_POWER:   return "atx-power";
-  case OUT_ESTOP:       return "estop";
+  case NamedOutput::MIST:        return "mist";
+  case NamedOutput::FLOOD:       return "flood";
+  case NamedOutput::VACUUM:      return "vacuum";
+  case NamedOutput::SPINDLE:     return "spindle";
+  case NamedOutput::SPINDLE_SPEED:  return "spindle-speed";
+  case NamedOutput::SPINDLE_DIRECTION: return "spindle-dir";
+  case NamedOutput::COOLER:      return "cooler";
+  case NamedOutput::CASE_LIGHTS: return "case-lights";
+  case NamedOutput::FAN:         return "fan";
+  case NamedOutput::HOTEND:      return "hotend";
+  case NamedOutput::HEATEDBED:   return "heatedbed";
+  case NamedOutput::POINTER:     return "pointer";
+  case NamedOutput::LED:         return "led";
+  case NamedOutput::ATX_POWER:   return "atx-power";
+  case NamedOutput::ESTOP:       return "estop";
 
-  case NUM_OUTPUTS: return "<invalid>";
+  case NamedOutput::NUM_OUTPUTS: return "<invalid>";
     // no default case to have the compiler warn about new things.
   }
   return "<invalid>";
 }
 
-bool HardwareMapping::NameToOutput(StringPiece str, LogicOutput *result) {
+bool HardwareMapping::NameToOutput(StringPiece str, NamedOutput *result) {
   const std::string n = ToLower(str);
 #define MAP_VAL(condition, val) if (condition)  do { *result = val; return true; } while(0)
-  MAP_VAL(n == "mist",        OUT_MIST);
-  MAP_VAL(n == "flood",       OUT_FLOOD);
-  MAP_VAL(n == "vacuum",      OUT_VACUUM);
-  MAP_VAL(n == "spindle" || n == "spindle-on", OUT_SPINDLE);
-  MAP_VAL(n == "spindle-speed" || n == "spindle-pwm", OUT_SPINDLE_SPEED);
-  MAP_VAL(n == "spindle-dir", OUT_SPINDLE_DIRECTION);
-  MAP_VAL(n == "cooler",      OUT_COOLER);
-  MAP_VAL(n == "case-lights", OUT_CASE_LIGHTS);
-  MAP_VAL(n == "fan",         OUT_FAN);
-  MAP_VAL(n == "hotend",      OUT_HOTEND);
-  MAP_VAL(n == "heatedbed",   OUT_HEATEDBED);
-  MAP_VAL(n == "led",         OUT_LED);
-  MAP_VAL(n == "atx-power",   OUT_ATX_POWER);
-  MAP_VAL(n == "estop",       OUT_ESTOP);
+  MAP_VAL(n == "mist",        NamedOutput::MIST);
+  MAP_VAL(n == "flood",       NamedOutput::FLOOD);
+  MAP_VAL(n == "vacuum",      NamedOutput::VACUUM);
+  MAP_VAL(n == "spindle" || n == "spindle-on", NamedOutput::SPINDLE);
+  MAP_VAL(n == "spindle-speed" || n == "spindle-pwm",
+          NamedOutput::SPINDLE_SPEED);
+  MAP_VAL(n == "spindle-dir", NamedOutput::SPINDLE_DIRECTION);
+  MAP_VAL(n == "cooler",      NamedOutput::COOLER);
+  MAP_VAL(n == "case-lights", NamedOutput::CASE_LIGHTS);
+  MAP_VAL(n == "fan",         NamedOutput::FAN);
+  MAP_VAL(n == "hotend",      NamedOutput::HOTEND);
+  MAP_VAL(n == "heatedbed",   NamedOutput::HEATEDBED);
+  MAP_VAL(n == "pointer",     NamedOutput::POINTER);
+  MAP_VAL(n == "led",         NamedOutput::LED);
+  MAP_VAL(n == "atx-power",   NamedOutput::ATX_POWER);
+  MAP_VAL(n == "estop",       NamedOutput::ESTOP);
 #undef MAP_VAL
   return false;
 }

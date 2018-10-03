@@ -6,8 +6,9 @@ if [ $# -lt 1 ] ; then
     exit 1
 fi
 
+#OPTIONAL_VALGRIND="valgrind --error-exitcode=5"
 IMAGE_SIZE="24%"
-THRESHOLD_ANGLE="-t16"
+PARAMS="-q -w1200 -t16 -Viso -g10"
 
 # For now, let's use the configuration in which each axis has the same steps/mm.
 # The step-speed-different.config _should_ look the same in the output, but
@@ -27,14 +28,17 @@ rm -f $OUT_HTML
 while [ $# -ne 0 ] ; do
     GCODE_FILE=$1
     BASENAME=$(basename $GCODE_FILE .gcode)
-    $GCODE2PS $THRESHOLD_ANGLE -o $TEST_OUT_DIR/${BASENAME}.ps $BEAGLEG_CONFIG -s -T2 $GCODE_FILE
-    if [ $? -ne 0 ] ; then
-	ERRMSG="<span style='color:#ff0000; font-weight:bold;'>Got gcode errors</span>"
+    $OPTIONAL_VALGRIND $GCODE2PS $PARAMS -o $TEST_OUT_DIR/${BASENAME}.ps $BEAGLEG_CONFIG -s -T2 $GCODE_FILE -C "${BASENAME}"
+    EXIT_CODE=$?
+    if [ $EXIT_CODE -eq 5 ] ; then
+	ERRMSG="<span style='color:#ffff00; font-weight:bold; background-color:#ff0000'> Got valgrind errors </span>"
+    elif [ $EXIT_CODE -ne 0 ]; then
+	ERRMSG="<span style='color:#ffff00; font-weight:bold; background-color:#ff0000'> Got execution errors; exit=$EXIT_CODE </span>"
     else
 	ERRMSG=""
     fi
     # create PNG
-    gs -q -r144 -dGraphicsAlphaBits=4 -dTextAlphaBits=4 -dEPSCrop -dBATCH -dNOPAUSE -sDEVICE=png16m -sOutputFile=$TEST_OUT_DIR/${BASENAME}.png $TEST_OUT_DIR/${BASENAME}.ps
+    gs -q -dGraphicsAlphaBits=4 -dTextAlphaBits=4 -dEPSCrop -dBATCH -dNOPAUSE -sDEVICE=png16m -sOutputFile=$TEST_OUT_DIR/${BASENAME}.png $TEST_OUT_DIR/${BASENAME}.ps
 
     cat <<EOF >> $OUT_HTML
 <div style="width:${IMAGE_SIZE}; float:left; border:1px solid #ccc; margin:2px; background-color:#ccc;">

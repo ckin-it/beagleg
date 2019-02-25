@@ -229,7 +229,7 @@ public:
     return true;
   }
 
-  void arc_move(float feed_mm_p_sec,
+  bool arc_move(float feed_mm_p_sec,
                 GCodeParserAxis normal_axis, bool clockwise,
                 const AxesRegister &start,
                 const AxesRegister &center,
@@ -248,11 +248,11 @@ public:
               end[AXIS_X], end[AXIS_Y], end[AXIS_Z]);
     }
     // Let the standard arc generation happen.
-    EventReceiver::arc_move(feed_mm_p_sec, normal_axis, clockwise,
-                            start, center, end);
+    return EventReceiver::arc_move(feed_mm_p_sec, normal_axis, clockwise,
+                                   start, center, end);
   }
 
-  void spline_move(float feed_mm_p_sec,
+  bool spline_move(float feed_mm_p_sec,
                    const AxesRegister &start,
                    const AxesRegister &cp1, const AxesRegister &cp2,
                    const AxesRegister &end) final {
@@ -273,7 +273,7 @@ public:
               cp2[AXIS_X], cp2[AXIS_Y], start[AXIS_Z],
               end[AXIS_X], end[AXIS_Y], end[AXIS_Z]);
     }
-    EventReceiver::spline_move(feed_mm_p_sec, start, cp1, cp2, end);
+    return EventReceiver::spline_move(feed_mm_p_sec, start, cp1, cp2, end);
   }
 
   void gcode_command_done(char letter, float val) final {
@@ -708,7 +708,7 @@ public:
     if (v < min_v_) min_v_ = v;
   }
 
-  void Enqueue(const LinearSegmentSteps &param) final {
+  bool Enqueue(const LinearSegmentSteps &param) final {
     GCodeParserAxis dominant_axis = AXIS_X;
     for (int i = 1; i < BEAGLEG_NUM_MOTORS; ++i) {
       if (abs(param.steps[i]) > abs(param.steps[dominant_axis]))
@@ -716,7 +716,7 @@ public:
     }
     if (config_.steps_per_mm[dominant_axis] == 0 ||
         param.steps[dominant_axis] == 0) {
-      return;  // Nothing really to do.
+      return true;  // Nothing really to do.
     }
 
     switch (pass_) {
@@ -748,6 +748,7 @@ public:
       PrintSegment(param, dominant_axis);
       break;
     }
+    return true;
   }
 
   // Set the length of how long the smallest colored range should be.

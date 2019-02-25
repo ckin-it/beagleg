@@ -199,6 +199,17 @@ bool GCodeMachineControl::Impl::Init() {
                 cfg_.max_feedrate[axis], gcodep_axis2letter(axis));
       return false;
     }
+    if (hardware_mapping_->HasProbeSwitch(axis)) {
+      if (cfg_.max_probe_feedrate[axis] <= 0 ||
+          cfg_.max_probe_feedrate[axis] > cfg_.max_feedrate[axis]) {
+        // Permissible hard override. We want to keep cfg_ const for most of the
+        // places, so writing here in Init() is permissible.
+        const_cast<MachineControlConfig&>(cfg_).max_probe_feedrate[axis]
+                                             = cfg_.max_feedrate[axis];
+         Log_debug("Probe feedrate clamped to %.1f for axis %c\n",
+                   cfg_.max_probe_feedrate[axis], gcodep_axis2letter(axis));
+      }
+    }
     if (cfg_.acceleration[axis] < 0) {
       Log_error("Invalid negative acceleration %.1f for axis %c\n",
                 cfg_.acceleration[axis], gcodep_axis2letter(axis));
@@ -297,6 +308,10 @@ bool GCodeMachineControl::Impl::Init() {
         line += "|<-PROBE@min; ";
       line += StringPrintf("HOME@max->|; ");
     }
+    if (hardware_mapping_->HasProbeSwitch(axis)) {
+      line += StringPrintf(" [ probe @ %.1f%s/s ]",
+                           cfg_.max_probe_feedrate[axis], unit);
+    }
 
     if (axis_clamped_ & (1 << axis))
       line += " [clamped to range]";
@@ -369,14 +384,14 @@ void GCodeMachineControl::Impl::wait_for_start() {
   if (pause_enabled_ && check_for_pause()) {
     mprintf("// BeagleG: pause switch active\n");
     int pause_active = PAUSE_ACTIVE_DETECT;
+    // The switch reading is debounced. We add additional delay with
+    // the while loop to ensure that the pause switch has been cleared.
     while (pause_active) {
       usleep(1000);
-      // TODO: we should probably have de-bouncing logic rather in the
-      // hardware mapping. E.g. something like TestPauseSwitch(2000).
       if (check_for_pause())
-	pause_active = PAUSE_ACTIVE_DETECT;
+        pause_active = PAUSE_ACTIVE_DETECT;
       else
-	pause_active--;
+        pause_active--;
     }
     mprintf("// BeagleG: pause switch cleared\n");
   }
@@ -399,6 +414,7 @@ bool GCodeMachineControl::Impl::in_estop() {
 }
 
 void GCodeMachineControl::Impl::set_estop(bool hard) {
+  set_spindle_off();
   hardware_mapping_->AuxOutputsOff();
   set_output_flags(HardwareMapping::NamedOutput::ESTOP, true);
   motors_enable(false);
@@ -802,7 +818,9 @@ bool GCodeMachineControl::Impl::coordinated_move(float feed,
   }
 
   float feedrate = prog_speed_factor_ * current_feedrate_mm_per_sec_;
-  planner_->Enqueue(axis, feedrate);
+  if (!planner_->Enqueue(axis, feedrate)) {
+    if (check_for_estop()) return false;
+  }
   return true;
 }
 
@@ -817,7 +835,9 @@ bool GCodeMachineControl::Impl::rapid_move(float feed,
   if (given > 0 && current_feedrate_mm_per_sec_ <= 0) {
     current_feedrate_mm_per_sec_ = given;  // At least something for G1.
   }
-  planner_->Enqueue(axis, given > 0 ? given : rapid_feed);
+  if (!planner_->Enqueue(axis, given > 0 ? given : rapid_feed)) {
+    if (check_for_estop()) return false;
+  }
   return true;
 }
 
@@ -918,6 +938,8 @@ int GCodeMachineControl::Impl::move_to_probe(enum GCodeParserAxis axis,
   int total_movement = 0;
   float v0 = 0;
   float v1 = feedrate;
+  if (v1 > cfg_.max_probe_feedrate[axis])
+    v1 = cfg_.max_probe_feedrate[axis];
   while (!hardware_mapping_->TestProbeSwitch()) {
     total_movement += planner_->DirectDrive(axis, dir * kProbeMM, v0, v1);
     v0 = v1;  // TODO: possibly acceleration over multiple segments.

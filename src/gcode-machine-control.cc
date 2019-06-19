@@ -103,7 +103,7 @@ public:
   virtual void gcode_command_done(char letter, float val);
   virtual void input_idle();
   virtual void wait_for_start();
-  virtual void go_home(AxisBitmap_t axis_bitmap);
+  virtual void go_home(AxisBitmap_t axis_bitmap, bool without_move = false);
   virtual bool probe_axis(float feed_mm_p_sec, enum GCodeParserAxis axis,
                           float *probed_position);
   virtual void set_speed_factor(float factor);    // M220 feedrate factor 0..1
@@ -129,8 +129,9 @@ private:
                               enum GCodeParserAxis defining_axis);
   int move_to_endstop(enum GCodeParserAxis axis,
                       float feedrate, bool backoff,
-                      HardwareMapping::AxisTrigger trigger, int max_steps=0);
-  void home_axis(enum GCodeParserAxis axis);
+                      HardwareMapping::AxisTrigger trigger, int max_steps=0,
+                      bool without_move = false);
+  void home_axis(enum GCodeParserAxis axis, bool without_move = false);
   void set_output_flags(HardwareMapping::LogicOutput out, bool is_on);
   void handle_M105();
 
@@ -752,11 +753,14 @@ void GCodeMachineControl::Impl::set_speed_factor(float value) {
 int GCodeMachineControl::Impl::move_to_endstop(enum GCodeParserAxis axis,
                                                float feedrate, bool backoff,
                                                HardwareMapping::AxisTrigger trigger,
-                                               int max_steps) {
+                                               int max_steps, bool without_move) {
   if (hardware_mapping_->IsHardwareSimulated()) {
     return 0;  // There are no switches to trigger, so pretend we stopped.
   }
-
+  if (without_move == true) {
+    mprintf("// G28.1: executing homing without move\n");
+    return;
+  }
   // This is a G30 probe if there is no backoff, use a smaller move for the
   // probe to increase accuracy.
   const float kHomingMM = (backoff) ? 0.5 : 0.05; // TODO: make configurable?
@@ -785,7 +789,7 @@ int GCodeMachineControl::Impl::move_to_endstop(enum GCodeParserAxis axis,
 }
 
 // TODO(hzeller): Should planner provide homing features ?
-void GCodeMachineControl::Impl::home_axis(enum GCodeParserAxis axis) {
+void GCodeMachineControl::Impl::home_axis(enum GCodeParserAxis axis, bool without_move) {
   const HardwareMapping::AxisTrigger trigger = cfg_.homing_trigger[axis];
   if (trigger == HardwareMapping::TRIGGER_NONE)
     return;  // TODO: warn that there is no swich ? Should we pretend go back?
@@ -803,12 +807,12 @@ void GCodeMachineControl::Impl::home_axis(enum GCodeParserAxis axis) {
     planner_->Enqueue(current, kHomingSpeed);
     planner_->BringPathToHalt();
   } else {
-    move_to_endstop(axis, kHomingSpeed, true, trigger);
+    move_to_endstop(axis, kHomingSpeed, true, trigger, without_move);
     planner_->SetExternalPosition(axis, home_pos);
   }
 }
 
-void GCodeMachineControl::Impl::go_home(AxisBitmap_t axes_bitmap) {
+void GCodeMachineControl::Impl::go_home(AxisBitmap_t axes_bitmap, bool without_move) {
   parser_->DisableAsyncStream(true);
   planner_->BringPathToHalt();
 
@@ -817,7 +821,7 @@ void GCodeMachineControl::Impl::go_home(AxisBitmap_t axes_bitmap) {
     if (axis == GCODE_NUM_AXES || !(axes_bitmap & (1 << axis)))
       continue;
     motor_ops_->EnableDirectEnqueue(true);
-    home_axis(axis);
+    home_axis(axis, without_move);
     motor_ops_->EnableDirectEnqueue(false);
   }
   homing_state_ = HOMING_STATE_HOMED;

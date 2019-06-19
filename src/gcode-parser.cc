@@ -234,7 +234,7 @@ private:
     return relative_to + unit_value;
   }
 
-  const char *handle_home(const char *line);
+  const char *handle_home(float sub_command, const char *line);
   const char *handle_G10(const char *line);
   void change_coord_system(float sub_command);
   void handle_G90_G91(float value);
@@ -1226,10 +1226,12 @@ const char *GCodeParser::Impl::gcodep_parse_pair_with_linenumber(
   return line;  // We parsed something; return whatever is remaining.
 }
 
-const char *GCodeParser::Impl::handle_home(const char *line) {
+const char *GCodeParser::Impl::handle_home(float sub_command, const char *line) {
   AxisBitmap_t homing_flags = 0;
   char axis_l;
+  bool without_move = false;
   float dummy;
+  if (sub_command == 28.1f) without_move = true;
   const char *remaining_line;
   while ((remaining_line = gparse_pair(line, &axis_l, &dummy))) {
     const enum GCodeParserAxis axis = gcodep_letter2axis(axis_l);
@@ -1239,7 +1241,7 @@ const char *GCodeParser::Impl::handle_home(const char *line) {
     line = remaining_line;
   }
   if (homing_flags == 0) homing_flags = kAllAxesBitmap;
-  callbacks->go_home(homing_flags);
+  callbacks->go_home(homing_flags, without_move);
 
   // Now update the world position
   for (GCodeParserAxis a : AllAxes()) {
@@ -1808,7 +1810,7 @@ void GCodeParser::Impl::ParseLine(GCodeParser *owner,
       case 19: arc_normal_ = AXIS_X; break;
       case 20: unit_to_mm_factor_ = 25.4f; break;
       case 21: unit_to_mm_factor_ = 1.0f; break;
-      case 28: line = handle_home(line); break;
+      case 28: line = handle_home(value, line); break;
       case 30: line = handle_z_probe(line); break;
       case 54: case 55: case 56: case 57: case 58: case 59:
         change_coord_system(value);

@@ -181,7 +181,7 @@ void GrpcControlServer::Impl::Run() {
 
   // Init the server and launch the wait on a thread
   grpc_wait_ = new std::thread([this](){
-    std::string server_address("0.0.0.0:50051");
+    std::string server_address("0.0.0.0:4445");
     BeagleGControlsServiceImpl service(command_pipe_fd_, stream_pipe_fd_);
 
     ServerBuilder builder;

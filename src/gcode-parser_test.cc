@@ -67,7 +67,7 @@ public:
   virtual void inform_origin_offset(const AxesRegister &offset) {
     parser_offset = offset;
   }
-  virtual void go_home(AxisBitmap_t axis_bitmap) { Count(CALL_go_home); }
+  virtual void go_home(AxisBitmap_t axis_bitmap, bool without_move = false) { Count(CALL_go_home); }
   virtual bool probe_axis(float feed_mm_p_sec, enum GCodeParserAxis axis,
                           float *probed_position) {
     Count(CALL_probe_axis);

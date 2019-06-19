@@ -38,7 +38,7 @@ public:
   TestArcAccumulator(const AxesRegister &start) : last_(start), total_len_(0) {}
 
   virtual void gcode_start(GCodeParser *parser) {}
-  virtual void go_home(AxisBitmap_t axis_bitmap) {}
+  virtual void go_home(AxisBitmap_t axis_bitmap, bool without_move = false) {}
   virtual void set_speed_factor(float factor) {}
   virtual void set_fanspeed(float value) {}
   virtual void set_temperature(float degrees_c) {}

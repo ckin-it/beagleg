@@ -112,7 +112,7 @@ public:
     // G28: Home all the axis whose bit is set. e.g. (1<<AXIS_X) for X
     // After that, the parser assume to be at the machine_origin as set in
     // the GCodeParserConfig for the given axes.
-    virtual void go_home(AxisBitmap_t axis_bitmap) = 0;
+    virtual void go_home(AxisBitmap_t axis_bitmap, bool without_move = false) = 0;
 
     // G30: Probe Z axis to travel_endstop. Returns 'true' if the receiver
     // successfully probed the position and returned it in "probed_position".

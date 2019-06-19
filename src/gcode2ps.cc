@@ -69,7 +69,7 @@ public:
   virtual void set_fanspeed(float speed) {}
   virtual void wait_temperature() {}
   virtual void motors_enable(bool b) {}
-  virtual void go_home(AxisBitmap_t axes) {
+  virtual void go_home(AxisBitmap_t axes, bool without_move = false) {
     // TODO: this might actually be a different corner of machine.
     if (pass_ == 2) fprintf(file_, "stroke 0 0 moveto  %% G28\n");
   }

@@ -758,8 +758,7 @@ int GCodeMachineControl::Impl::move_to_endstop(enum GCodeParserAxis axis,
     return 0;  // There are no switches to trigger, so pretend we stopped.
   }
   if (without_move == true) {
-    mprintf("// G28.1: executing homing without move\n");
-    return;
+    return 0;
   }
   // This is a G30 probe if there is no backoff, use a smaller move for the
   // probe to increase accuracy.
@@ -807,7 +806,7 @@ void GCodeMachineControl::Impl::home_axis(enum GCodeParserAxis axis, bool withou
     planner_->Enqueue(current, kHomingSpeed);
     planner_->BringPathToHalt();
   } else {
-    move_to_endstop(axis, kHomingSpeed, true, trigger, without_move);
+    move_to_endstop(axis, kHomingSpeed, true, trigger, 0, without_move);
     planner_->SetExternalPosition(axis, home_pos);
   }
 }
@@ -815,7 +814,6 @@ void GCodeMachineControl::Impl::home_axis(enum GCodeParserAxis axis, bool withou
 void GCodeMachineControl::Impl::go_home(AxisBitmap_t axes_bitmap, bool without_move) {
   parser_->DisableAsyncStream(true);
   planner_->BringPathToHalt();
-
   for (const char axis_letter : cfg_.home_order) {
     const enum GCodeParserAxis axis = gcodep_letter2axis(axis_letter);
     if (axis == GCODE_NUM_AXES || !(axes_bitmap & (1 << axis)))

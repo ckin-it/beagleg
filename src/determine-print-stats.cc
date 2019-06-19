@@ -51,7 +51,7 @@ public:
   virtual void set_fanspeed(float speed) { delegatee_->set_fanspeed(speed);  }
   virtual void wait_temperature() { delegatee_->wait_temperature(); }
   virtual void motors_enable(bool b) { delegatee_->motors_enable(b); }
-  virtual void go_home(AxisBitmap_t axes) { /* ignore */ }
+  virtual void go_home(AxisBitmap_t axes, bool without_move = false) { /* ignore */ }
   virtual void inform_origin_offset(const AxesRegister& axes) {
     delegatee_->inform_origin_offset(axes);
   }

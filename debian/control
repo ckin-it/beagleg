@@ -1,0 +1,10 @@
+Source: beagleg
+Section: electronics
+Priority: optional
+Maintainer: Atra s.r.l.
+Build-Depends: debhelper (>=11~)
+
+Package: beagleg
+Architecture: armhf
+Depends: ${shlibs:Depends}
+Description: Beagleg (Atra version)

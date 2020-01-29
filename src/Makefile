@@ -4,6 +4,9 @@
 # Stuff based on the environment. This assumes stuff to be compiled on the
 # beaglebone and the am335x_pru_package checked out.
 # https://github.com/beagleboard/am335x_pru_package
+BINDIR=$(DESTDIR)/usr/bin
+ETCDIR=$(DESTDIR)/etc
+SYSTEMD_UNIT_DIR=$(DESTDIR)/lib/systemd/system
 
 # Change here for which hardware you are compiling. See hardware/ directory.
 # Currently supported BUMPS, CRAMPS, and VGEN5
@@ -160,5 +163,13 @@ clean:
 
 compiler-flags: FORCE
 	@echo '$(CXX) $(CXXFLAGS) $(GTEST_INCLUDE)' | cmp -s - $@ || echo '$(CXX) $(CXXFLAGS) $(GTEST_INCLUDE)' > $@
+
+install:
+	install -d $(BINDIR)
+	install -d $(SYSTEMD_UNIT_DIR)
+	install -d $(ETCDIR)
+	install -m 755 ../machine-control $(BINDIR)
+	install -m 644 ../beagleg.service $(SYSTEMD_UNIT_DIR)
+	install -m 644 ../cnc.config $(ETCDIR)
 
 .PHONY: FORCE

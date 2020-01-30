@@ -1,0 +1,13 @@
+[Unit]
+Description=Beagleg
+After=syslog.target network.target
+
+[Service]
+Type=simple
+ExecStart=/bin/sh -c '/usr/bin/chrt --rr 99 /usr/bin/machine-control -c /etc/cnc.config --port 4444 2>&1 | logger -t beagleg'
+#ExecStart=/opt/projects/beagleg/machine-control -c AtraCNC.config --port 4444
+#ExecStart=/usr/bin/chrt --rr 99 ./machine-control -c AtraCNC.config --port 4444
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
